@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+
+# Weights & Data (Мы их подключаем через volumes, не надо их пекать в образ!)
+weights/
+data/
+output/
+*.pt
+*.onnx
+*.engine
+*.mp4
+*.avi
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.md

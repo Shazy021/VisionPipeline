@@ -1,0 +1,61 @@
+# =============================================================================
+# VisionPipeline Configuration
+# =============================================================================
+
+# Model weights paths by architecture and backend
+models:
+  default_model: yolo
+
+  yolo:
+    pytorch: weights/yolo11n.pt
+    onnx: weights/yolo11n.onnx
+    tensorrt: weights/yolo11n.engine
+
+  rtdetr:
+    pytorch: weights/rtdetr-l.pt
+    onnx: weights/rtdetr-l.onnx
+    tensorrt: weights/rtdetr-l.engine
+
+# Inference settings
+inference:
+  default_backend: pytorch
+  conf_threshold: 0.25
+  nms_threshold: 0.45
+
+  # Class filtering
+  # null = detect all 80 COCO classes
+  # [0] = detect only persons
+  # [0, 2, 3, 5, 7] = persons + vehicles
+  # See src/constants/classes.py for all class IDs
+  class_ids: null
+
+  # Input size for model
+  input_size:
+    fixed_size: [640, 640]
+
+# Video processing settings
+video:
+  show_preview: false
+  display_info: true
+  max_frames: null
+
+# Export settings for model conversion
+export:
+  onnx:
+    opset: 17
+    simplify: true
+    dynamic: false
+  tensorrt:
+    fp16: true
+    int8: false
+    workspace_gb: 4
+
+# Automation settings
+automation:
+  auto_download: true
+  auto_export: true
+
+# Metrics collection
+metrics:
+  enabled: true
+  save_path: null

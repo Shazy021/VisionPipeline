@@ -1,0 +1,7 @@
+loguru
+opencv-python-headless
+numpy
+ultralytics
+onnxruntime-gpu
+tritonclient[http]
+pyyaml

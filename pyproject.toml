@@ -1,0 +1,151 @@
+[project]
+name = "visionpipeline"
+version = "0.1.0"
+description = "Video Analytics Pipeline with Multi-Backend Inference"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Shazy021"}
+]
+keywords = ["computer-vision", "object-detection", "yolo", "triton", "video-analytics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "opencv-python>=4.13.0",
+    "numpy>=2.4.0",
+    "pyyaml>=6.0.0",
+    "loguru>=0.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+    "mypy>=1.19.0",
+    "ruff>=0.15.4",
+    "pre-commit>=5.0.0",
+    "types-PyYAML>=6.0.0",
+]
+
+pytorch = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "ultralytics>=8.4.0",
+]
+
+onnx = [
+    "onnxruntime-gpu>=1.20.0",
+]
+
+triton = [
+    "tritonclient>=2.65.0",
+]
+
+tensorrt = [
+    "tensorrt>=10.9.0",
+]
+
+all = [
+    "visionpipeline[dev,pytorch,onnx,triton,tensorrt]",
+]
+
+[project.scripts]
+visionpipeline = "main:main"
+
+# =============================================================================
+# MYPY CONFIGURATION
+# =============================================================================
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+extra_checks = true
+
+[[tool.mypy.overrides]]
+module = [
+    "cv2.*",
+    "ultralytics.*",
+    "onnxruntime.*",
+    "numpy.*",
+    "tritonclient.*",
+]
+ignore_missing_imports = true
+
+# =============================================================================
+# RUFF CONFIGURATION (Linter + Formatter)
+# =============================================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without explicit strict
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+# =============================================================================
+# PYTEST CONFIGURATION
+# =============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning",
+]
+
+# =============================================================================
+# COVERAGE CONFIGURATION
+# =============================================================================
+[tool.coverage.run]
+source = ["src"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

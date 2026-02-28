@@ -1,0 +1,45 @@
+services:
+  triton-server:
+    image: nvcr.io/nvidia/tritonserver:26.01-py3
+    container_name: triton_server
+    command: tritonserver --model-repository=/models --log-verbose=0
+    shm_size: '2gb'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./model_repository:/models
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # === Client ===
+  vision-client:
+    build: .
+    container_name: vision_client
+    depends_on:
+      triton-server:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    environment:
+      - TRITON_URL=triton-server:8000
+    command: python main.py --source data/crowd.mp4 --model yolo --backend triton --output output/result_triton.mp4
