@@ -183,19 +183,37 @@ def main() -> None:
         target=viewer_process, args=(queue_results, args.show, args.output, fps_source)
     )
 
+    p_reader.daemon = True
+    p_inference.daemon = True
+    p_viewer.daemon = True
+
     # Start all processes
     p_reader.start()
     p_inference.start()
     p_viewer.start()
 
     # =========================================================================
-    # 10. Wait for Completion
+    # 10. Wait for Completion with Graceful Shutdown
     # =========================================================================
-    p_reader.join()
-    p_inference.join()
-    p_viewer.join()
 
-    logger.success("Pipeline finished successfully!")
+    try:
+        # Wait for reader to finish (or indefinitely for streams)
+        while p_reader.is_alive():
+            p_reader.join(timeout=1.0)
+
+        # Wait for other processes
+        p_inference.join(timeout=2.0)
+        p_viewer.join(timeout=2.0)
+
+    except KeyboardInterrupt:
+        logger.warning("\n[Main] Stopping pipeline...")
+        p_reader.terminate()
+        p_inference.terminate()
+        p_viewer.terminate()
+    finally:
+        logger.success("Pipeline stopped.")
+        logger.info("👋 All processes stopped.")
+        sys.exit(0)
 
 
 if __name__ == "__main__":
