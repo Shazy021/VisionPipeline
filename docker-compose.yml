@@ -41,5 +41,5 @@ services:
       - ./data:/app/data
       - ./output:/app/output
     environment:
-      - TRITON_URL=triton-server:8000
+      - TRITON_URL=triton-server:8001
     command: python main.py --source data/crowd.mp4 --model yolo --backend triton --output output/result_triton.mp4

@@ -5,23 +5,28 @@ This module orchestrates the video analysis pipeline:
 1. Parse CLI arguments
 2. Load configuration
 3. Prepare model (download/export if needed)
-4. Start multiprocessing pipeline
+4. Resolve input size
+5. Start multiprocessing pipeline
 
 Pipeline Architecture:
     VideoReader → Inference → Viewer
     (Process 1)  (Process 2)  (Process 3)
 """
 
+from __future__ import annotations
+
 import multiprocessing as mp
 import sys
-from typing import Any
 
 from loguru import logger
 
 from src.core.pipeline import inference_process, video_reader_process, viewer_process
+from src.types import VideoInfo
 from src.utils.cli import parse_args
 from src.utils.config_loader import load_config
+from src.utils.input_size import InputSizeResolver
 from src.utils.model_manager import ModelManager
+from src.utils.utils import get_video_optimal_size
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -68,10 +73,10 @@ def main() -> None:
     # =========================================================================
     model = args.model or config.get("models.default_model", "yolo")
     backend = args.backend or config.get("inference.default_backend", "pytorch")
-    weights_path = None
+    weights_path: str | None = None
 
     if backend == "triton":
-        weights_path = "triton_server_model"  # Dummy path for factory
+        weights_path = "triton_server_model"
         logger.info("Triton backend selected. Skipping local weights download.")
     else:
         if args.weights:
@@ -108,27 +113,60 @@ def main() -> None:
     else:
         logger.info("🎯 Detecting all 80 COCO classes")
 
+    # =========================================================================
+    # 5. Get Video Metadata
+    # =========================================================================
+    try:
+        video_info_dict = get_video_optimal_size(args.source, None)
+        video_info = VideoInfo.from_dict(video_info_dict)
+    except ValueError as e:
+        logger.error(str(e))
+        return
+
+    fps_source = video_info.fps or 30
+
+    # =========================================================================
+    # 6. Resolve Input Size
+    # =========================================================================
+    resolver = InputSizeResolver(config, video_info)
+
+    result = resolver.resolve(
+        backend=backend,
+        cli_override=args.input_size,
+        model=model,
+        weights_path=weights_path,
+    )
+
+    input_size = result.size
+    backend_url = result.backend_url
+
+    # =========================================================================
+    # 7. Build Detector Arguments
+    # =========================================================================
     detector_args = {
         "model": model,
         "backend": backend,
         "weights_path": weights_path,
         "conf_threshold": config.get("inference.conf_threshold", 0.25),
         "nms_threshold": config.get("inference.nms_threshold", 0.45),
-        "input_size": tuple(config.get("inference.input_size.fixed_size", [640, 640])),
+        "input_size": input_size,
         "use_gpu": True,
         "class_ids": class_ids,
     }
 
+    if backend_url:
+        detector_args["triton_url"] = backend_url
+
     # =========================================================================
-    # 5. Create Multiprocessing Queues
+    # 8. Create Multiprocessing Queues
     # =========================================================================
-    queue_frames: mp.Queue[Any] = mp.Queue(maxsize=20)
-    queue_results: mp.Queue[Any] = mp.Queue(maxsize=20)
+    queue_frames: mp.Queue[object] = mp.Queue(maxsize=20)
+    queue_results: mp.Queue[object] = mp.Queue(maxsize=20)
 
     logger.info("Spawning processes...")
 
     # =========================================================================
-    # 6. Create and Start Processes
+    # 9. Create and Start Processes
     # =========================================================================
     # Video Reader Process
     p_reader = mp.Process(
@@ -139,13 +177,6 @@ def main() -> None:
     p_inference = mp.Process(
         target=inference_process, args=(queue_frames, queue_results, detector_args)
     )
-
-    # Get FPS from source video
-    import cv2
-
-    cap_temp = cv2.VideoCapture(args.source)
-    fps_source = int(cap_temp.get(cv2.CAP_PROP_FPS)) or 30
-    cap_temp.release()
 
     # Viewer Process
     p_viewer = mp.Process(
@@ -158,7 +189,7 @@ def main() -> None:
     p_viewer.start()
 
     # =========================================================================
-    # 7. Wait for Completion
+    # 10. Wait for Completion
     # =========================================================================
     p_reader.join()
     p_inference.join()

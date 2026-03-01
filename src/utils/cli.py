@@ -35,6 +35,14 @@ def parse_args() -> argparse.Namespace:
     # Inference parameters
     parser.add_argument("--conf", type=float, default=None, help="Confidence threshold")
     parser.add_argument("--nms", type=float, default=None, help="NMS threshold")
+    parser.add_argument(
+        "--input-size",
+        type=int,
+        nargs=2,
+        default=None,
+        metavar=("H", "W"),
+        help="Override input size, e.g. --input-size 640 640",
+    )
 
     # Processing
     parser.add_argument("--max-frames", type=int, default=None, help="Maximum frames to process")

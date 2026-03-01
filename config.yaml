@@ -7,16 +7,18 @@ models:
   default_model: yolo
 
   yolo:
-    pytorch: weights/yolo11n.pt
-    onnx: weights/yolo11n.onnx
-    tensorrt: weights/yolo11n.engine
+    pytorch: weights/yolov8n.pt
+    onnx: weights/yolov8n.onnx
+    tensorrt: weights/yolov8n.engine
 
   rtdetr:
     pytorch: weights/rtdetr-l.pt
     onnx: weights/rtdetr-l.onnx
     tensorrt: weights/rtdetr-l.engine
 
-# Inference settings
+# =============================================================================
+# Inference Settings
+# =============================================================================
 inference:
   default_backend: pytorch
   conf_threshold: 0.25
@@ -26,36 +28,65 @@ inference:
   # null = detect all 80 COCO classes
   # [0] = detect only persons
   # [0, 2, 3, 5, 7] = persons + vehicles
-  # See src/constants/classes.py for all class IDs
   class_ids: null
 
-  # Input size for model
+  # Input size configuration
+  # Priority: CLI --input-size > config mode > Triton server
   input_size:
+    # Mode: "auto" or "fixed"
+    # - auto: calculate from video resolution (stride 32)
+    # - fixed: use fixed_size below
+    mode: auto
+
+    # Fixed size [width, height] - used when mode="fixed"
+    # Note: Order is [width, height] for intuitive CLI usage
     fixed_size: [640, 640]
 
-# Video processing settings
+    # Maximum dimension for "auto" mode (prevents upscaling)
+    # null = no limit
+    max_size: null
+
+# =============================================================================
+# Triton Inference Server
+# =============================================================================
+triton:
+  # Server URL (gRPC port 8001)
+  url: localhost:8001
+
+  # Model name in Triton Model Repository
+  model_name: yolo
+
+# =============================================================================
+# Video Processing
+# =============================================================================
 video:
   show_preview: false
   display_info: true
   max_frames: null
 
-# Export settings for model conversion
+# =============================================================================
+# Model Export Settings
+# =============================================================================
 export:
   onnx:
     opset: 17
-    simplify: true
-    dynamic: false
+    simplify: false
+    dynamic: true    # Set true for dynamic input shapes
   tensorrt:
     fp16: true
     int8: false
     workspace_gb: 4
 
-# Automation settings
+# =============================================================================
+# Automation
+# =============================================================================
 automation:
-  auto_download: true
-  auto_export: true
+  auto_download: true   # Auto-download weights if missing
+  auto_export: true     # Auto-export to ONNX/TensorRT if missing
 
-# Metrics collection
+# =============================================================================
+# Metrics
+# =============================================================================
 metrics:
   enabled: true
-  save_path: null
+  save_path: null       # null = disable saving

@@ -7,10 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY requirements.txt .
+COPY pyproject.toml .
 
-RUN pip install --no-cache-dir --break-system-packages -r requirements.txt
-RUN pip install --no-cache-dir --break-system-packages tensorrt
+RUN pip install --no-cache-dir --break-system-packages -e .[all]
 
 COPY . .
 

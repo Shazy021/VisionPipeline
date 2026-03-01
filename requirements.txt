@@ -3,5 +3,5 @@ opencv-python-headless
 numpy
 ultralytics
 onnxruntime-gpu
-tritonclient[http]
+tritonclient[grpc]
 pyyaml

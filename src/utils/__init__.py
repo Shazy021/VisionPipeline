@@ -1,12 +1,15 @@
+"""Utilities module."""
+
 from .cli import parse_args
-from .config_loader import load_config
-from .model_manager import ModelManager
-from .utils import get_video_optimal_size, setup_logging
+from .config_loader import Config, load_config
+from .input_size import InputSizeResolver
+from .utils import get_optimal_size, get_video_optimal_size
 
 __all__ = [
-    "get_video_optimal_size",
-    "setup_logging",
-    "load_config",
-    "ModelManager",
     "parse_args",
+    "load_config",
+    "Config",
+    "get_optimal_size",
+    "get_video_optimal_size",
+    "InputSizeResolver",
 ]
