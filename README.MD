@@ -9,6 +9,8 @@ Video Analytics Pipeline with Multi-Backend Inference Support
 - **80 COCO Classes**: Full object detection with configurable class filtering
 - **Multi-Process Pipeline**: VideoReader → Inference → Viewer (bypasses Python GIL)
 - **Docker Support**: Containerized deployment with Docker Compose
+- **Smart Input Size**: Auto-calculation from video or query from server metadata
+- **Type-Safe**: Strict mypy configuration, TypedDict, Protocol
 
 ## Installation
 
@@ -32,7 +34,7 @@ pip install -e ".[triton]"       # Triton server client
 pip install -e ".[dev,pytorch]"  # Development with PyTorch
 ```
 
-### GPU Support (CUDA 13.0)
+### GPU Support
 
 ```bash
 # PyTorch with CUDA 13.0
@@ -63,73 +65,46 @@ python main.py --source video.mp4 --backend onnx --model yolo
 | `--source` | str | **required** | Path to input video file |
 | `--output` | str | `None` | Path to output video |
 | `--config` | str | `config.yaml` | Path to config file |
-| `--model` | str | `yolo` | Model: `yolo`, `rtdetr`, `rtdetr_v2` |
+| `--model` | str | `yolo` | Model: `yolo`, `rtdetr` |
 | `--backend` | str | `pytorch` | Backend: `pytorch`, `onnx`, `tensorrt`, `triton` |
 | `--weights` | str | from config | Path to model weights |
 | `--conf` | float | `0.25` | Confidence threshold |
 | `--nms` | float | `0.45` | NMS IoU threshold |
 | `--max-frames` | int | `None` | Maximum frames to process |
 | `--show` | flag | `False` | Show preview window |
-| `--save-metrics` | str | `None` | Save metrics to JSON file |
-| `--no-metrics` | flag | `False` | Disable metrics collection |
-
-### Examples
-
-```bash
-# Basic usage
-python main.py --source video.mp4
-
-# With TensorRT and preview
-python main.py --source video.mp4 --backend tensorrt --show
-
-# Save output video
-python main.py --source video.mp4 --output result.mp4
-
-# Process first 100 frames with custom threshold
-python main.py --source video.mp4 --max-frames 100 --conf 0.5
-
-# RT-DETR with ONNX
-python main.py --source video.mp4 --model rtdetr --backend onnx
-
-# Custom weights path
-python main.py --source video.mp4 --weights ./custom_model.pt
-```
 
 ## Backends
 
 | Backend | Install | Weights | Best For |
 |---------|---------|---------|----------|
 | PyTorch | `.[pytorch]` | `.pt` | Development, flexibility |
-| TensorRT | `.[pytorch]` | `.engine` | Maximum GPU performance |
+| TensorRT | `.[tensorrt]` | `.engine` | Maximum GPU performance |
 | ONNX | `.[onnx]` | `.onnx` | Cross-platform deployment |
-| Triton | `.[triton]` | server | Production deployment |
+| Triton | `.[triton]` | server | Production, remote inference |
 
-> **Note:** ONNX auto-export requires `ultralytics` if `.onnx` file doesn't exist.
+## Input Size Resolution
 
-## Docker
+Input size is resolved automatically with priority:
 
-```bash
-# Build and run with Triton server
-docker-compose up --build
-
-# Or run inference only
-docker build -t visionpipeline .
+```
+CLI --input-size > Backend query > Config (auto/fixed)
 ```
 
-## Configuration
+| Backend | Source |
+|---------|--------|
+| PyTorch | Config (auto from video / fixed) |
+| TensorRT | Config (auto from video / fixed) |
+| ONNX | Config or model metadata inspection |
+| Triton | Server model metadata (fixed/dynamic) |
 
-Edit `config.yaml`:
-
+Config:
 ```yaml
 inference:
-  conf_threshold: 0.25
-  nms_threshold: 0.45
-
-  # Class filtering
-  class_ids: null    # null = all 80 COCO classes
-                     # [0] = persons only
-                     # [0, 2, 3, 5, 7] = persons + vehicles
+  input_size:
+    mode: auto          # auto | fixed
+    fixed_size: [640, 640]
 ```
+
 
 ## Development
 
@@ -140,29 +115,9 @@ pip install -e ".[dev]"
 # Setup pre-commit hooks
 pre-commit install
 
-# Run checks manually
-pre-commit run --all-files
-
-# Or individually:
-ruff check src/          # Linting
-ruff format src/         # Formatting
-mypy src/                # Type checking
-```
-
-## Project Structure
-
-```
-src/
-├── constants/      # COCO classes and colors
-├── core/           # Multi-process pipeline
-├── detectors/      # Detector implementations
-│   ├── base_detector.py
-│   ├── ultralytics_detector.py
-│   ├── onnx_detector.py
-│   └── triton_detector.py
-├── export/         # Model export utilities
-├── types/          # Type definitions (TypedDict, Protocol)
-└── utils/          # Config, CLI, helpers
+# Run checks
+ruff check src/
+mypy src/
 ```
 
 ## Requirements
