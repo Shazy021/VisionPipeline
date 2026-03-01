@@ -42,14 +42,24 @@ pytorch = [
 ]
 
 onnx = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "ultralytics>=8.4.0",
     "onnxruntime-gpu>=1.20.0",
 ]
 
 triton = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "ultralytics>=8.4.0",
     "tritonclient[grpc]>=2.65.0",
 ]
 
 tensorrt = [
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
+    "ultralytics>=8.4.0",
+    "onnxruntime-gpu>=1.20.0",
     "tensorrt>=10.9.0",
 ]
 
