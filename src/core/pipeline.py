@@ -254,7 +254,10 @@ def video_reader_process(
 
 
 def inference_process(
-    queue_frames: mp.Queue, queue_results: mp.Queue, detector_args: dict[str, Any]
+    queue_frames: mp.Queue,
+    queue_results: mp.Queue,
+    detector_args: dict[str, Any],
+    batch_size: int = 1,
 ) -> None:
     """
     Take frames, run inference, put results.
@@ -266,6 +269,7 @@ def inference_process(
         queue_frames: Queue to receive frames from reader
         queue_results: Queue to send (frame, detections) to viewer
         detector_args: Arguments for DetectorFactory.create()
+        batch_size: Number of frames to process together (default: 1)
     """
     from src.detectors.factory import DetectorFactory
 
@@ -280,21 +284,34 @@ def inference_process(
         return
 
     frame_count = 0
+
     try:
         while True:
-            frame = queue_frames.get()
+            # Collect batch_size frames
+            batch: list[np.ndarray] = []
+            for _ in range(batch_size):
+                frame = queue_frames.get()
 
-            if frame is None:
-                queue_results.put(None)
-                break
+                if frame is None:
+                    # End of video - process remaining frames in batch
+                    if batch:
+                        results = detector.predict_batch(batch)
+                        for f, dets in zip(batch, results):
+                            dets = detector.filter_detections(dets)
+                            queue_results.put((f, dets))
+                    # Send final signal
+                    queue_results.put(None)
+                    return
 
-            # Run inference and apply filtering
-            detections = detector.predict(frame)
-            detections = detector.filter_detections(detections)
+                batch.append(frame)
 
-            queue_results.put((frame, detections))
+            # Process batch
+            results = detector.predict_batch(batch)
+            for f, dets in zip(batch, results):
+                dets = detector.filter_detections(dets)
+                queue_results.put((f, dets))
 
-            frame_count += 1
+            frame_count += len(batch)
             if frame_count % 100 == 0:
                 logger.debug(f"[Inference] Processed {frame_count} frames")
 

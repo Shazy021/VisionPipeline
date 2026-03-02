@@ -23,6 +23,7 @@ inference:
   default_backend: pytorch
   conf_threshold: 0.25
   nms_threshold: 0.45
+  batch_size: 1
 
   # Class filtering
   # null = detect all 80 COCO classes
@@ -75,6 +76,7 @@ export:
   tensorrt:
     fp16: true
     int8: false
+    dynamic: true
     workspace_gb: 4
 
 # =============================================================================

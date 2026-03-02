@@ -161,6 +161,8 @@ class ModelExporter:
         workspace: int = 4,
         imgsz: int = 640,
         opset: int = 17,
+        dynamic: bool = False,
+        batch_size: int = 1,
         data: str | None = None,
     ) -> str:
         """
@@ -215,7 +217,9 @@ class ModelExporter:
             precision = "FP32"
 
         logger.info(f"📦 Exporting to TensorRT: {model_path}")
-        logger.info(f"   Precision: {precision} | Size: {imgsz}x{imgsz} | Workspace: {workspace}GB")
+        logger.info(
+            f"   Precision: {precision} | Size: {imgsz}x{imgsz} | Batch: {batch_size} | Dynamic: {dynamic} | Workspace: {workspace}GB"
+        )
 
         start_time = time.time()
 
@@ -229,7 +233,8 @@ class ModelExporter:
                 "int8": int8,
                 "opset": opset,
                 "workspace": workspace,
-                "dynamic": False,
+                "dynamic": dynamic,
+                "batch": batch_size,
                 "imgsz": imgsz,
             }
 

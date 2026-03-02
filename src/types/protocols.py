@@ -50,15 +50,19 @@ class DetectorProtocol(Protocol):
     conf_threshold: float
     class_ids: set[int] | None
 
-    def predict(self, frame: np.ndarray) -> list[Detection]:
+    def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
         """
-        Run inference on a single frame.
+        Run inference on a batch of frames.
+
+        More efficient than individual predict() calls due to:
+        - Single GPU kernel launch instead of N
+        - Better GPU memory bandwidth utilization
 
         Args:
-            frame: BGR image as numpy array, shape (H, W, 3)
+            frames: List of BGR images, each shape (H, W, 3)
 
         Returns:
-            List of Detection dicts (may include all classes above threshold)
+            List of detection lists, one per frame
         """
         ...
 

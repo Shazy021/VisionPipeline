@@ -157,6 +157,9 @@ def main() -> None:
     if backend_url:
         detector_args["triton_url"] = backend_url
 
+    # Get batch size from config (default: 1)
+    batch_size = config.get("inference.batch_size", 1)
+
     # =========================================================================
     # 8. Create Multiprocessing Queues
     # =========================================================================
@@ -175,7 +178,7 @@ def main() -> None:
 
     # Inference Process
     p_inference = mp.Process(
-        target=inference_process, args=(queue_frames, queue_results, detector_args)
+        target=inference_process, args=(queue_frames, queue_results, detector_args, batch_size)
     )
 
     # Viewer Process

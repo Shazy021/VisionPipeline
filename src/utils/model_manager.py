@@ -91,13 +91,15 @@ class ModelManager:
 
             export_params = self.config.get(f"export.{backend}", {})
             imgsz = self.config.get("inference.input_size.fixed_size", [640, 640])[0]
+            batch_size = self.config.get("inference.batch_size", 1)
+            dynamic = bool(export_params.get("dynamic", False))
 
             if backend == "onnx":
                 exported_path = ModelExporter.export_to_onnx(
                     model_path=str(source_pt),
                     opset=int(export_params.get("opset", 17)),
                     simplify=bool(export_params.get("simplify", True)),
-                    dynamic=bool(export_params.get("dynamic", False)),
+                    dynamic=dynamic,
                     imgsz=int(imgsz),
                 )
             else:  # tensorrt
@@ -107,6 +109,8 @@ class ModelManager:
                     int8=bool(export_params.get("int8", False)),
                     workspace=int(export_params.get("workspace_gb", 4)),
                     imgsz=int(imgsz),
+                    dynamic=dynamic,
+                    batch_size=batch_size,
                 )
 
             exported_path_obj = Path(exported_path)

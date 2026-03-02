@@ -132,6 +132,52 @@ class UltralyticsDetector(BaseDetector):
         # Apply additional filtering and add class names
         return self.filter_detections(detections)
 
+    def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        """
+        Run inference on a batch of frames.
+
+        Ultralytics natively supports batch inference - just pass
+        all frames at once for optimized GPU utilization.
+
+        Args:
+            frames: List of BGR images
+
+        Returns:
+            List of detection lists, one per frame
+        """
+        if not frames:
+            return []
+
+        # Single frame fallback
+        if len(frames) == 1:
+            return [self.predict(frames[0])]
+
+        classes_param = list(self.class_ids) if self.class_ids else None
+
+        # Run batch inference - Ultralytics handles this natively
+        results = self._model(
+            frames, verbose=False, classes=classes_param, imgsz=self.img_size, device=self.device
+        )
+
+        # Parse results for each frame
+        all_detections: list[list[Detection]] = []
+
+        for r in results:
+            frame_detections: list[Detection] = []
+
+            if r.boxes is not None and len(r.boxes) > 0:
+                for box in r.boxes:
+                    xyxy = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls = int(box.cls[0].cpu().numpy())
+
+                    detection: Detection = {"bbox": xyxy.tolist(), "conf": conf, "class_id": cls}
+                    frame_detections.append(detection)
+
+            all_detections.append(self.filter_detections(frame_detections))
+
+        return all_detections
+
     def warmup(self, iterations: int = 3) -> None:
         """
         Warmup the model with dummy inference.

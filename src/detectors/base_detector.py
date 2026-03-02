@@ -92,6 +92,29 @@ class BaseDetector(ABC):
         """
         pass
 
+    def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        """
+        Run inference on a batch of frames.
+
+        Default implementation loops over frames and calls predict().
+        Subclasses can override for optimized batch inference.
+
+        Args:
+            frames: List of input images in BGR format
+                    Each frame shape: (height, width, 3)
+
+        Returns:
+            List of detection lists, one per frame
+
+        Example:
+            >>> frames = [frame1, frame2, frame3]
+            >>> results = detector.predict_batch(frames)
+            >>> # results[0] = detections for frame1
+            >>> # results[1] = detections for frame2
+            >>> # results[2] = detections for frame3
+        """
+        return [self.predict(frame) for frame in frames]
+
     def filter_detections(self, detections: list[Detection]) -> list[Detection]:
         """
         Filter detections by confidence and class.

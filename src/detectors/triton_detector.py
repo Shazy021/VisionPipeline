@@ -230,3 +230,59 @@ class TritonDetector(BaseDetector):
             return []
 
         return self.filter_detections(self.postprocess(output, frame.shape))
+
+    def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        if not frames:
+            return []
+
+        if len(frames) == 1:
+            return [self.predict(frames[0])]
+
+        batch = np.stack([self.preprocess(f) for f in frames])
+
+        output = self.client.infer(self.model_name, batch)
+
+        results = []
+        for i, frame in enumerate(frames):
+            detections = self._postprocess_single(output[i], frame.shape)
+            results.append(self.filter_detections(detections))
+
+        return results
+
+    def _postprocess_single(
+        self, output: np.ndarray, orig_shape: tuple[int, int, int]
+    ) -> list[Detection]:
+        """Postprocess single frame output from batch."""
+        h, w = orig_shape[:2]
+
+        scale_x = w / self.input_size[1]
+        scale_y = h / self.input_size[0]
+
+        predictions = output.T  # [8400, 84]
+        boxes = predictions[:, :4]
+        scores = predictions[:, 4:]
+
+        class_ids = scores.argmax(axis=1)
+        confs = scores.max(axis=1)
+
+        mask = confs >= self.conf_threshold
+        boxes, confs, class_ids = boxes[mask], confs[mask], class_ids[mask]
+
+        if len(boxes) == 0:
+            return []
+
+        xyxy = np.empty_like(boxes)
+        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] * 0.5
+        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] * 0.5
+        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] * 0.5
+        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] * 0.5
+
+        xyxy[:, [0, 2]] *= scale_x
+        xyxy[:, [1, 3]] *= scale_y
+
+        keep = cv2.dnn.NMSBoxes(xyxy, confs, self.conf_threshold, self.nms_threshold)
+
+        return [
+            {"bbox": xyxy[i].tolist(), "conf": float(confs[i]), "class_id": int(class_ids[i])}
+            for i in keep.flatten()
+        ]

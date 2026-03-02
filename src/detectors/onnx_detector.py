@@ -15,10 +15,12 @@ Supported models:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 import cv2
 import numpy as np
+from loguru import logger
 
 try:
     import onnxruntime as ort
@@ -79,6 +81,7 @@ class ONNXDetector(BaseDetector):
 
         self.nms_threshold = nms_threshold
         self.model_type = model_type.lower()
+        ort.preload_dlls()
 
         # Configure execution providers (GPU first if available)
         providers = []
@@ -146,18 +149,34 @@ class ONNXDetector(BaseDetector):
         # Resize image
         resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Create padded canvas (gray fill, value 114)
-        padded = np.full((self.input_h, self.input_w, 3), 114, dtype=np.uint8)
+        # Calculate padding
         pad_w = (self.input_w - new_w) // 2
         pad_h = (self.input_h - new_h) // 2
-        padded[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized
 
-        # Normalize [0, 255] -> [0, 1] and convert to CHW format
-        input_tensor = padded.astype(np.float32) / 255.0
-        input_tensor = np.transpose(input_tensor, (2, 0, 1))  # HWC -> CHW
-        input_tensor = np.expand_dims(input_tensor, axis=0)  # Add batch dimension
+        # Add padding using copyMakeBorder (faster than manual array assignment)
+        padded = cv2.copyMakeBorder(
+            resized,
+            pad_h,  # top
+            self.input_h - new_h - pad_h,  # bottom
+            pad_w,  # left
+            self.input_w - new_w - pad_w,  # right
+            cv2.BORDER_CONSTANT,
+            value=114,
+        )
 
-        return input_tensor, scale, (pad_w, pad_h)
+        # Create blob: normalizes to [0,1], transposes HWC->CHW, adds batch dimension
+        # Note: swapRB=False because we want to keep BGR order (as OpenCV loads)
+        blob = cv2.dnn.blobFromImage(
+            padded,
+            scalefactor=1.0 / 255.0,
+            size=(self.input_w, self.input_h),
+            mean=0,
+            swapRB=False,
+            crop=False,
+        )
+
+        # blob shape is (1, 3, H, W) – exactly what ONNX Runtime expects
+        return blob, scale, (pad_w, pad_h)
 
     def non_max_suppression(
         self, boxes: np.ndarray, scores: np.ndarray, class_ids: np.ndarray | None = None
@@ -411,11 +430,15 @@ class ONNXDetector(BaseDetector):
         """
         original_shape = frame.shape[:2]
 
+        t0 = time.perf_counter()
+
         # Preprocess frame
         input_tensor, scale, padding = self.preprocess(frame)
+        t1 = time.perf_counter()
 
         # Run inference
         outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
+        t2 = time.perf_counter()
 
         # Postprocess based on model type
         if self.model_type == "yolo":
@@ -423,5 +446,155 @@ class ONNXDetector(BaseDetector):
         else:
             detections = self.postprocess_rtdetr(outputs, original_shape, scale, padding)
 
+        t3 = time.perf_counter()
+
+        logger.debug(
+            f"pre={1000 * (t1 - t0):.1f}ms | "
+            f"infer={1000 * (t2 - t1):.1f}ms | "
+            f"post={1000 * (t3 - t2):.1f}ms"
+        )
+
         # Apply class filtering and add class names
         return self.filter_detections(detections)
+
+    def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
+        """
+        Run ONNX inference on a batch of frames.
+
+        More efficient than individual predict() calls because:
+        - Single session.run() call instead of N calls
+        - Better GPU utilization
+
+        Args:
+            frames: List of BGR images
+
+        Returns:
+            List of detection lists, one per frame
+        """
+        if not frames:
+            return []
+
+        # Single frame fallback
+        if len(frames) == 1:
+            return [self.predict(frames[0])]
+
+        # Preprocess all frames
+        batch_tensors = []
+        scales = []
+        paddings = []
+
+        for frame in frames:
+            tensor, scale, padding = self.preprocess(frame)
+            batch_tensors.append(tensor[0])  # Remove batch dim for stacking
+            scales.append(scale)
+            paddings.append(padding)
+
+        # Stack into batch: [N, 3, H, W]
+        batch = np.stack(batch_tensors, axis=0)
+
+        # Run batch inference
+        outputs = self.session.run(self.output_names, {self.input_name: batch})
+
+        # Postprocess each frame
+        results = []
+        output = outputs[0]  # [N, 8400, 84] or [N, 84, 8400]
+
+        for i, frame in enumerate(frames):
+            original_shape = frame.shape[:2]
+
+            # Extract single frame output
+            if self.model_type == "yolo":
+                detections = self._postprocess_yolo_single(
+                    output[i], original_shape, scales[i], paddings[i]
+                )
+            else:
+                detections = self._postprocess_rtdetr_single(
+                    output[i], original_shape, scales[i], paddings[i]
+                )
+
+            results.append(self.filter_detections(detections))
+
+        return results
+
+    def _postprocess_yolo_single(
+        self,
+        output: np.ndarray,
+        original_shape: tuple[int, int],
+        scale: float,
+        padding: tuple[int, int],
+    ) -> list[Detection]:
+        """Postprocess single frame output from YOLO batch."""
+        # Handle [84, N] format -> transpose to [N, 84]
+        if output.shape[0] == 84:
+            output = output.T
+
+        boxes = output[:, :4]
+        class_scores = output[:, 4:]
+
+        scores = np.max(class_scores, axis=1)
+        class_ids = np.argmax(class_scores, axis=1)
+
+        mask = scores >= self.conf_threshold
+        filtered_boxes = boxes[mask]
+        filtered_scores = scores[mask]
+        filtered_class_ids = class_ids[mask]
+
+        if len(filtered_boxes) == 0:
+            return []
+
+        cx, cy, w, h = filtered_boxes.T
+        x1 = cx - w / 2
+        y1 = cy - h / 2
+        x2 = cx + w / 2
+        y2 = cy + h / 2
+        boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
+
+        keep_indices = self.non_max_suppression(boxes_xyxy, filtered_scores, filtered_class_ids)
+
+        return self._boxes_to_detections(
+            boxes_xyxy[keep_indices],
+            filtered_scores[keep_indices],
+            filtered_class_ids[keep_indices],
+            original_shape,
+            scale,
+            padding,
+        )
+
+    def _postprocess_rtdetr_single(
+        self,
+        output: np.ndarray,
+        original_shape: tuple[int, int],
+        scale: float,
+        padding: tuple[int, int],
+    ) -> list[Detection]:
+        """Postprocess single frame output from RT-DETR batch."""
+        boxes = output[:, :4]
+        class_scores = output[:, 4:]
+
+        scores = np.max(class_scores, axis=1)
+        class_ids = np.argmax(class_scores, axis=1)
+
+        mask = scores >= self.conf_threshold
+        filtered_boxes = boxes[mask]
+        filtered_scores = scores[mask]
+        filtered_class_ids = class_ids[mask]
+
+        if len(filtered_boxes) == 0:
+            return []
+
+        cx, cy, w, h = filtered_boxes.T
+        x1 = (cx - w / 2) * self.input_w
+        y1 = (cy - h / 2) * self.input_h
+        x2 = (cx + w / 2) * self.input_w
+        y2 = (cy + h / 2) * self.input_h
+
+        boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
+
+        return self._boxes_to_detections(
+            boxes_xyxy,
+            filtered_scores,
+            filtered_class_ids,
+            original_shape,
+            scale,
+            padding,
+        )
