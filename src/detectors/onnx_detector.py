@@ -1,5 +1,5 @@
 """
-ONNX Runtime Detector.
+ONNX Runtime Detector for YOLO Models.
 
 This module provides object detection using ONNX Runtime, supporting both
 CPU and CUDA GPU execution. It includes custom implementations of:
@@ -9,7 +9,6 @@ CPU and CUDA GPU execution. It includes custom implementations of:
 
 Supported models:
 - YOLO (v8, v11, etc.) with NMS
-- RT-DETR (no NMS required, uses learned queries)
 """
 
 from __future__ import annotations
@@ -36,14 +35,13 @@ from src.types import Detection
 
 class ONNXDetector(BaseDetector):
     """
-    Universal ONNX Runtime detector for YOLO and RT-DETR models.
+    ONNX Runtime detector for YOLO models.
 
     Provides cross-platform inference with CPU and CUDA GPU support.
     Includes built-in NMS (Non-Maximum Suppression) for YOLO models.
 
     Attributes:
         nms_threshold: IoU threshold for NMS filtering
-        model_type: Model architecture ('yolo' or 'rtdetr')
         input_h: Model input height in pixels
         input_w: Model input width in pixels
         device: Active execution device ('GPU (CUDA)' or 'CPU')
@@ -55,19 +53,19 @@ class ONNXDetector(BaseDetector):
         use_gpu: bool = True,
         conf_threshold: float = 0.25,
         nms_threshold: float = 0.45,
-        model_type: str = "yolo",
+        model_type: str = "yolo",  # noqa: ARG002 - kept for API compatibility
         input_size: tuple[int, int] | None = None,
         class_ids: list[int] | None = None,
     ):
         """
-        Initialize ONNX detector.
+        Initialize ONNX detector for YOLO models.
 
         Args:
             onnx_path: Path to ONNX model file (.onnx)
             use_gpu: Use CUDA GPU if available (default: True)
             conf_threshold: Confidence threshold for detections (0.0-1.0)
             nms_threshold: IoU threshold for NMS (0.0-1.0, default: 0.45)
-            model_type: Model architecture - 'yolo' or 'rtdetr'
+            model_type: Deprecated - kept for API compatibility. Only YOLO is supported.
             input_size: Custom input size as (height, width) tuple
             class_ids: List of class IDs to detect. None = all classes
 
@@ -80,7 +78,6 @@ class ONNXDetector(BaseDetector):
             raise ImportError("onnxruntime not installed")
 
         self.nms_threshold = nms_threshold
-        self.model_type = model_type.lower()
         ort.preload_dlls()
 
         # Configure execution providers (GPU first if available)
@@ -110,7 +107,7 @@ class ONNXDetector(BaseDetector):
 
         # Log initialization
         logging.info(f"Loaded ONNX model: {onnx_path}")
-        logging.info(f"   Model type: {self.model_type.upper()}")
+        logging.info("   Model type: YOLO")
         logging.info(f"   Device: {self.device}")
         logging.info(f"   Input size: {self.input_w}x{self.input_h}")
 
@@ -301,65 +298,6 @@ class ONNXDetector(BaseDetector):
             padding,
         )
 
-    def postprocess_rtdetr(
-        self,
-        outputs: list[np.ndarray],
-        original_shape: tuple[int, int],
-        scale: float,
-        padding: tuple[int, int],
-    ) -> list[Detection]:
-        """
-        Postprocess RT-DETR model outputs.
-
-        RT-DETR outputs normalized coordinates in [1, 300, 84] format.
-        No NMS required as transformer uses set prediction.
-
-        Args:
-            outputs: Raw ONNX outputs
-            original_shape: Original image (height, width)
-            scale: Preprocessing scale factor
-            padding: Preprocessing padding
-
-        Returns:
-            List of Detection dicts
-        """
-        output = outputs[0]
-
-        # Remove batch dimension
-        if len(output.shape) == 3:
-            output = output[0]  # [300, 84]
-
-        # Split output into boxes and class scores
-        boxes = output[:, :4]  # [300, 4] - normalized cxcywh
-        class_scores = output[:, 4:]  # [300, 80] - class probabilities
-
-        # Get best class for each detection
-        scores = np.max(class_scores, axis=1)
-        class_ids = np.argmax(class_scores, axis=1)
-
-        # Filter by confidence
-        mask = scores >= self.conf_threshold
-        filtered_boxes = boxes[mask]
-        filtered_scores = scores[mask]
-        filtered_class_ids = class_ids[mask]
-
-        if len(filtered_boxes) == 0:
-            return []
-
-        # Convert normalized cxcywh to xyxy in pixel coordinates
-        cx, cy, w, h = filtered_boxes.T
-
-        x1 = (cx - w / 2) * self.input_w
-        y1 = (cy - h / 2) * self.input_h
-        x2 = (cx + w / 2) * self.input_w
-        y2 = (cy + h / 2) * self.input_h
-
-        boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
-
-        return self._boxes_to_detections(
-            boxes_xyxy, filtered_scores, filtered_class_ids, original_shape, scale, padding
-        )
-
     def _boxes_to_detections(
         self,
         boxes: np.ndarray,
@@ -440,11 +378,8 @@ class ONNXDetector(BaseDetector):
         outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
         t2 = time.perf_counter()
 
-        # Postprocess based on model type
-        if self.model_type == "yolo":
-            detections = self.postprocess_yolo(outputs, original_shape, scale, padding)
-        else:
-            detections = self.postprocess_rtdetr(outputs, original_shape, scale, padding)
+        # Postprocess YOLO output
+        detections = self.postprocess_yolo(outputs, original_shape, scale, padding)
 
         t3 = time.perf_counter()
 
@@ -503,14 +438,9 @@ class ONNXDetector(BaseDetector):
             original_shape = frame.shape[:2]
 
             # Extract single frame output
-            if self.model_type == "yolo":
-                detections = self._postprocess_yolo_single(
-                    output[i], original_shape, scales[i], paddings[i]
-                )
-            else:
-                detections = self._postprocess_rtdetr_single(
-                    output[i], original_shape, scales[i], paddings[i]
-                )
+            detections = self._postprocess_yolo_single(
+                output[i], original_shape, scales[i], paddings[i]
+            )
 
             results.append(self.filter_detections(detections))
 
@@ -555,45 +485,6 @@ class ONNXDetector(BaseDetector):
             boxes_xyxy[keep_indices],
             filtered_scores[keep_indices],
             filtered_class_ids[keep_indices],
-            original_shape,
-            scale,
-            padding,
-        )
-
-    def _postprocess_rtdetr_single(
-        self,
-        output: np.ndarray,
-        original_shape: tuple[int, int],
-        scale: float,
-        padding: tuple[int, int],
-    ) -> list[Detection]:
-        """Postprocess single frame output from RT-DETR batch."""
-        boxes = output[:, :4]
-        class_scores = output[:, 4:]
-
-        scores = np.max(class_scores, axis=1)
-        class_ids = np.argmax(class_scores, axis=1)
-
-        mask = scores >= self.conf_threshold
-        filtered_boxes = boxes[mask]
-        filtered_scores = scores[mask]
-        filtered_class_ids = class_ids[mask]
-
-        if len(filtered_boxes) == 0:
-            return []
-
-        cx, cy, w, h = filtered_boxes.T
-        x1 = (cx - w / 2) * self.input_w
-        y1 = (cy - h / 2) * self.input_h
-        x2 = (cx + w / 2) * self.input_w
-        y2 = (cy + h / 2) * self.input_h
-
-        boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
-
-        return self._boxes_to_detections(
-            boxes_xyxy,
-            filtered_scores,
-            filtered_class_ids,
             original_shape,
             scale,
             padding,

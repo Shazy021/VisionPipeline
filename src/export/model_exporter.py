@@ -1,7 +1,7 @@
 """
 Model Export Utilities.
 
-This module provides utilities for exporting detection models to optimized
+This module provides utilities for exporting YOLO detection models to optimized
 inference formats: ONNX and TensorRT.
 
 Export formats:
@@ -25,10 +25,10 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 if TYPE_CHECKING:
-    from ultralytics import RTDETR, YOLO
+    from ultralytics import YOLO
 
 try:
-    from ultralytics import RTDETR, YOLO
+    from ultralytics import YOLO
 
     ULTRALYTICS_AVAILABLE = True
 except ImportError:
@@ -38,7 +38,7 @@ except ImportError:
 
 class ModelExporter:
     """
-    Export utility for converting detection models to optimized formats.
+    Export utility for converting YOLO detection models to optimized formats.
 
     Supports:
     - ONNX: Cross-platform, CPU/GPU compatible
@@ -48,39 +48,19 @@ class ModelExporter:
     """
 
     @staticmethod
-    def _detect_model_type(model_path: str) -> str:
+    def _load_model(model_path: str) -> YOLO:
         """
-        Detect model type from filename.
+        Load YOLO model.
 
         Args:
             model_path: Path to model file
 
         Returns:
-            Model type string: 'yolo' or 'rtdetr'
-        """
-        path_lower = model_path.lower()
-        if "rtdetr" in path_lower:
-            return "rtdetr"
-        return "yolo"
-
-    @staticmethod
-    def _load_model(model_path: str) -> YOLO | RTDETR:
-        """
-        Load model based on type.
-
-        Args:
-            model_path: Path to model file
-
-        Returns:
-            Loaded Ultralytics model instance
+            Loaded Ultralytics YOLO model instance
         """
         if not ULTRALYTICS_AVAILABLE:
             raise ImportError("Ultralytics library required for model export")
 
-        model_type = ModelExporter._detect_model_type(model_path)
-
-        if model_type == "rtdetr":
-            return RTDETR(model_path)
         return YOLO(model_path)
 
     @staticmethod

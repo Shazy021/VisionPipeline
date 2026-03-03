@@ -11,11 +11,6 @@ models:
     onnx: weights/yolov8n.onnx
     tensorrt: weights/yolov8n.engine
 
-  rtdetr:
-    pytorch: weights/rtdetr-l.pt
-    onnx: weights/rtdetr-l.onnx
-    tensorrt: weights/rtdetr-l.engine
-
 # =============================================================================
 # Inference Settings
 # =============================================================================
@@ -23,7 +18,7 @@ inference:
   default_backend: pytorch
   conf_threshold: 0.25
   nms_threshold: 0.45
-  batch_size: 1
+  batch_size: 16
 
   # Class filtering
   # null = detect all 80 COCO classes

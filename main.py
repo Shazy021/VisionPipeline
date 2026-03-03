@@ -93,7 +93,7 @@ def main() -> None:
             if weights_path is None:
                 logger.error("Weights path not specified")
                 return
-            manager.ensure_model(weights_path, model, backend)
+            manager.ensure_model(weights_path, backend)
         except Exception as e:
             logger.error(f"Model preparation failed: {e}")
             return

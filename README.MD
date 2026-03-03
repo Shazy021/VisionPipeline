@@ -5,7 +5,7 @@ Video Analytics Pipeline with Multi-Backend Inference Support
 ## Features
 
 - **Multi-Backend Support**: PyTorch, ONNX Runtime, TensorRT, NVIDIA Triton
-- **Multiple Architectures**: YOLO (v8, v11) and RT-DETR
+- **YOLO Architecture**: YOLOv8, YOLOv11 and newer
 - **80 COCO Classes**: Full object detection with configurable class filtering
 - **Multi-Process Pipeline**: VideoReader → Inference → Viewer (bypasses Python GIL)
 - **Docker Support**: Containerized deployment with Docker Compose
@@ -65,7 +65,6 @@ python main.py --source video.mp4 --backend onnx --model yolo
 | `--source` | str | **required** | Path to input video file |
 | `--output` | str | `None` | Path to output video |
 | `--config` | str | `config.yaml` | Path to config file |
-| `--model` | str | `yolo` | Model: `yolo`, `rtdetr` |
 | `--backend` | str | `pytorch` | Backend: `pytorch`, `onnx`, `tensorrt`, `triton` |
 | `--weights` | str | from config | Path to model weights |
 | `--conf` | float | `0.25` | Confidence threshold |

@@ -1,7 +1,7 @@
 """
-Ultralytics Detector Wrapper.
+Ultralytics YOLO Detector Wrapper.
 
-This module provides a unified interface for Ultralytics models (YOLO, RT-DETR).
+This module provides a unified interface for Ultralytics YOLO models.
 It wraps the Ultralytics API and handles:
 - Model loading (PyTorch .pt or TensorRT .engine files)
 - Inference with configurable class filtering
@@ -9,7 +9,6 @@ It wraps the Ultralytics API and handles:
 
 Supported architectures:
 - YOLO (v8, v11, etc.)
-- RT-DETR (Real-Time DEtection Transformer)
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-from ultralytics import RTDETR, YOLO
+from ultralytics import YOLO
 
 from src.detectors.base_detector import BaseDetector
 from src.types import Detection
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
 
 class UltralyticsDetector(BaseDetector):
     """
-    Unified detector for Ultralytics models (YOLO and RT-DETR).
+    Unified detector for Ultralytics YOLO models.
 
     This class wraps the Ultralytics API to provide a consistent interface.
     It supports multiple backends implicitly based on file extension:
@@ -36,7 +35,6 @@ class UltralyticsDetector(BaseDetector):
         - .engine files: TensorRT backend (optimized inference)
 
     Key features:
-    - Automatic model type detection
     - Configurable class filtering
     - GPU acceleration support
     """
@@ -47,18 +45,18 @@ class UltralyticsDetector(BaseDetector):
         conf_threshold: float = 0.25,
         img_size: tuple[int, int] = (640, 640),
         device: str = "cuda",
-        model_type: str = "yolo",
+        model_type: str = "yolo",  # noqa: ARG002 - kept for API compatibility
         class_ids: list[int] | None = None,
     ):
         """
-        Initialize the Ultralytics detector.
+        Initialize the Ultralytics YOLO detector.
 
         Args:
             model_path: Path to the model weights (.pt or .engine file).
             conf_threshold: Confidence threshold for detections.
             img_size: Input image size (height, width).
             device: Target device ('cuda' or 'cpu').
-            model_type: Type of model architecture ('yolo' or 'rtdetr').
+            model_type: Deprecated - kept for API compatibility. Only YOLO is supported.
             class_ids: List of class IDs to detect. None = all classes.
 
         Example:
@@ -74,16 +72,12 @@ class UltralyticsDetector(BaseDetector):
         # Initialize base class
         super().__init__(conf_threshold, class_ids)
 
-        self.model_type = model_type.lower()
         self.model_path = model_path
         self.img_size = img_size
         self.device = device
 
-        # Load model based on type
-        if self.model_type == "rtdetr":
-            self._model: YOLO | RTDETR = RTDETR(model_path)
-        else:
-            self._model = YOLO(model_path)
+        # Load YOLO model
+        self._model: YOLO = YOLO(model_path)
 
     def predict(self, frame: np.ndarray) -> list[Detection]:
         """

@@ -19,14 +19,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        choices=["yolo", "rtdetr", "rtdetr_v2"],
+        choices=["yolo"],
         default=None,
-        help="Model architecture",
+        help="Model architecture (default: yolo)",
     )
     parser.add_argument(
         "--backend",
         type=str,
-        choices=["pytorch", "onnx", "tensorrt", "triton", "huggingface"],
+        choices=["pytorch", "onnx", "tensorrt", "triton"],
         default=None,
         help="Inference backend",
     )

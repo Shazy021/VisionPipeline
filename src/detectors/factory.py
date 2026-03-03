@@ -49,7 +49,7 @@ class DetectorFactory:
         Create a detector instance based on model and backend type.
 
         Args:
-            model: Model architecture ('yolo' or 'rtdetr')
+            model: Model architecture ('yolo')
             backend: Inference backend ('pytorch', 'onnx', 'tensorrt', 'triton')
             weights_path: Path to model weights
             conf_threshold: Confidence threshold (0.0-1.0)

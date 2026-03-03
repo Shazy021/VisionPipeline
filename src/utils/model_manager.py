@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from .config_loader import Config
 
 try:
-    from ultralytics import RTDETR, YOLO
+    from ultralytics import YOLO
 
     ULTRALYTICS_AVAILABLE = True
 except ImportError:
@@ -26,7 +26,7 @@ class ModelManager:
         self.auto_export = config.get("automation.auto_export", False)
         self.config = config
 
-    def ensure_model(self, weights_path: str, model_type: str, backend: str) -> bool:
+    def ensure_model(self, weights_path: str, backend: str) -> bool:
         """Ensure model file exists. Download/Export if necessary."""
         path = Path(weights_path)
 
@@ -38,7 +38,7 @@ class ModelManager:
         if backend == "pytorch":
             if not self.auto_download:
                 raise FileNotFoundError(f"Model not found: {weights_path}")
-            return self._download_pt_model(path, model_type)
+            return self._download_pt_model(path)
 
         elif backend in ["onnx", "tensorrt"]:
             pt_path = path.with_suffix(".pt")
@@ -51,14 +51,14 @@ class ModelManager:
 
             if self.auto_download and self.auto_export:
                 logger.info("Downloading source PT model to export...")
-                if self._download_pt_model(pt_path, model_type):
+                if self._download_pt_model(pt_path):
                     return self._export_model(pt_path, path, backend)
 
             raise FileNotFoundError(f"Required model missing: {weights_path}")
 
         return False
 
-    def _download_pt_model(self, target_path: Path, model_type: str) -> bool:
+    def _download_pt_model(self, target_path: Path) -> bool:
         """Download PyTorch model using Ultralytics API."""
         if not ULTRALYTICS_AVAILABLE:
             raise ImportError("Ultralytics library is required to download models.")
@@ -67,11 +67,8 @@ class ModelManager:
             logger.info(f"Downloading {target_path.name}...")
             model_name = target_path.stem
 
-            # Instantiation triggers download
-            if "yolo" in model_type.lower():
-                YOLO(model_name)
-            else:
-                RTDETR(model_name)
+            # Instantiation triggers download - YOLO only
+            YOLO(model_name)
 
             downloaded = Path(model_name + ".pt")
             if downloaded.exists() and str(downloaded) != str(target_path):
