@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from loguru import logger
+
 from src.detectors.ultralytics_detector import UltralyticsDetector
 
 if TYPE_CHECKING:
@@ -43,6 +45,10 @@ class DetectorFactory:
         input_size: tuple[int, int] | None = None,
         use_gpu: bool = True,
         class_ids: list[int] | None = None,
+        half: bool = True,
+        augment: bool = False,
+        batch_size: int = 1,
+        warmup_iterations: int = 3,
         **kwargs: Any,
     ) -> DetectorProtocol:
         """
@@ -57,6 +63,10 @@ class DetectorFactory:
             input_size: Tuple (height, width) for model input. None for auto-detect.
             use_gpu: Enable GPU acceleration
             class_ids: List of class IDs to detect. None = all classes
+            half: Use FP16 inference (2x speedup on RTX GPUs)
+            augment: Enable test-time augmentation (slower but more accurate)
+            batch_size: Batch size for inference. Must match TensorRT engine.
+            warmup_iterations: Number of warmup iterations for GPU.
             **kwargs: Additional backend-specific options:
                 - triton_url: Triton server URL (default: localhost:8001)
 
@@ -66,31 +76,19 @@ class DetectorFactory:
         Raises:
             ValueError: If model/backend combination is not supported
             ImportError: If required backend dependencies are not installed
-
-        Example:
-            >>> # Detect all classes
-            >>> detector = DetectorFactory.create(
-            ...     model="yolo", backend="pytorch",
-            ...     weights_path="yolo11n.pt", conf_threshold=0.25
-            ... )
-
-            >>> # Detect only persons
-            >>> detector = DetectorFactory.create(
-            ...     model="yolo", backend="pytorch",
-            ...     weights_path="yolo11n.pt", conf_threshold=0.25,
-            ...     class_ids=[0]
-            ... )
         """
         model = model.lower()
         backend = backend.lower()
         actual_device = "cuda" if use_gpu else "cpu"
 
-        # Default input size for non-Triton backends
         effective_input_size = input_size if input_size is not None else (640, 640)
 
-        # =========================================================================
+        logger.info(
+            f"[Factory] Creating detector: model={model}, backend={backend}, "
+            f"half={half}, augment={augment}, batch_size={batch_size}"
+        )
+
         # PyTorch / TensorRT Backend (via Ultralytics)
-        # =========================================================================
         if backend in ("pytorch", "tensorrt"):
             return UltralyticsDetector(
                 model_path=weights_path,
@@ -99,12 +97,14 @@ class DetectorFactory:
                 device=actual_device,
                 model_type=model,
                 class_ids=class_ids,
+                half=half,
+                augment=augment,
+                batch_size=batch_size,
+                warmup_iterations=warmup_iterations,
             )
 
-        # =========================================================================
         # ONNX Runtime Backend
-        # =========================================================================
-        elif backend == "onnx":
+        if backend == "onnx":
             from src.detectors.onnx_detector import ONNXDetector
 
             return ONNXDetector(
@@ -117,13 +117,10 @@ class DetectorFactory:
                 class_ids=class_ids,
             )
 
-        # =========================================================================
         # Triton Inference Server Backend
-        # =========================================================================
-        elif backend == "triton":
+        if backend == "triton":
             from src.detectors.triton_detector import TritonDetector
 
-            # Get URL from kwargs or use default
             triton_url = kwargs.get("triton_url", "localhost:8001")
 
             return TritonDetector(
@@ -131,7 +128,7 @@ class DetectorFactory:
                 url=triton_url,
                 conf_threshold=conf_threshold,
                 nms_threshold=nms_threshold,
-                input_size=input_size,  # None for fixed models, calculated for dynamic
+                input_size=input_size,
                 class_ids=class_ids,
             )
 

@@ -14,6 +14,9 @@ Usage:
 
     # Export to TensorRT with FP16
     ModelExporter.export_to_tensorrt("yolo11n.pt", fp16=True)
+
+    # Export with batch size
+    ModelExporter.export_to_tensorrt("yolo11n.pt", fp16=True, batch_size=4)
 """
 
 from __future__ import annotations
@@ -71,6 +74,7 @@ class ModelExporter:
         simplify: bool = True,
         dynamic: bool = False,
         imgsz: int = 640,
+        batch_size: int = 1,
     ) -> str:
         """
         Export PyTorch model to ONNX format.
@@ -88,6 +92,7 @@ class ModelExporter:
             simplify: Simplify ONNX graph (default: True)
             dynamic: Dynamic batch size support (default: False)
             imgsz: Input image size (default: 640)
+            batch_size: Batch size for static export (default: 1)
 
         Returns:
             Path to exported ONNX model
@@ -106,7 +111,8 @@ class ModelExporter:
 
         logger.info(f"📦 Exporting to ONNX: {model_path}")
         logger.info(
-            f"   Opset: {opset} | Size: {imgsz}x{imgsz} | Simplify: {simplify} | Dynamic: {dynamic}"
+            f"   Opset: {opset} | Size: {imgsz}x{imgsz} | "
+            f"Batch: {batch_size} | Simplify: {simplify} | Dynamic: {dynamic}"
         )
 
         start_time = time.time()
@@ -116,7 +122,12 @@ class ModelExporter:
 
             # Export to ONNX
             onnx_path = model.export(
-                format="onnx", opset=opset, simplify=simplify, dynamic=dynamic, imgsz=imgsz
+                format="onnx",
+                opset=opset,
+                simplify=simplify,
+                dynamic=dynamic,
+                imgsz=imgsz,
+                batch=batch_size,
             )
 
             elapsed = time.time() - start_time
@@ -136,9 +147,9 @@ class ModelExporter:
     def export_to_tensorrt(
         model_path: str,
         output_dir: str = "weights",  # noqa: ARG004
-        fp16: bool = False,
+        fp16: bool = True,
         int8: bool = False,
-        workspace: int = 4,
+        workspace: int = 2,  # Changed from 4 to 2 for 16GB GPUs
         imgsz: int = 640,
         opset: int = 17,
         dynamic: bool = False,
@@ -157,12 +168,17 @@ class ModelExporter:
         Args:
             model_path: Path to PyTorch model (.pt file)
             output_dir: Directory to save exported engine (unused, kept for API compat)
-            fp16: Use FP16 precision (default: False)
+            fp16: Use FP16 precision (default: True)
             int8: Use INT8 quantization (default: False).
                   Note: INT8 requires calibration data for stable accuracy.
-            workspace: GPU workspace size in GB (default: 4)
+            workspace: GPU workspace size in GB (default: 2).
+                       Reduce if OOM error on smaller GPUs.
             imgsz: Input image size (default: 640)
             opset: ONNX opset for intermediate conversion (default: 17)
+            dynamic: Dynamic batch dimension (default: False).
+                     If True, batch_size becomes max batch.
+            batch_size: Batch size for inference (default: 1).
+                        For dynamic=True, this is the maximum batch size.
             data: Path to dataset config (YAML) for INT8 calibration.
 
         Returns:
@@ -173,8 +189,11 @@ class ModelExporter:
             RuntimeError: If export fails (no GPU, wrong CUDA version)
 
         Example:
-            >>> # FP16 export (recommended for most GPUs)
-            >>> trt_path = ModelExporter.export_to_tensorrt("yolo11n.pt", fp16=True)
+            >>> # FP16 export with batch=1 (min latency)
+            >>> trt_path = ModelExporter.export_to_tensorrt("yolo11n.pt", fp16=True, batch_size=1)
+
+            >>> # FP16 export with batch=4 (max throughput)
+            >>> trt_path = ModelExporter.export_to_tensorrt("yolo11n.pt", fp16=True, batch_size=4)
 
             >>> # INT8 export (requires calibration data)
             >>> trt_path = ModelExporter.export_to_tensorrt(
@@ -198,7 +217,8 @@ class ModelExporter:
 
         logger.info(f"📦 Exporting to TensorRT: {model_path}")
         logger.info(
-            f"   Precision: {precision} | Size: {imgsz}x{imgsz} | Batch: {batch_size} | Dynamic: {dynamic} | Workspace: {workspace}GB"
+            f"   Precision: {precision} | Size: {imgsz}x{imgsz} | "
+            f"Batch: {batch_size} | Dynamic: {dynamic} | Workspace: {workspace}GB"
         )
 
         start_time = time.time()
@@ -233,11 +253,27 @@ class ModelExporter:
             logger.info(f"   Output: {trt_path}")
             logger.info(f"   Size: {trt_size:.2f} MB | Time: {elapsed:.1f}s")
 
+            # Usage hint
+            if dynamic:
+                logger.info(f"   Dynamic batch: can use batch 1 to {batch_size}")
+            else:
+                logger.info(f"   Static batch: MUST use batch_size={batch_size}")
+
             return str(trt_path)
 
         except Exception as e:
             elapsed = time.time() - start_time
             logger.error(f"❌ TensorRT export failed after {elapsed:.1f}s: {e}")
+
+            # Helpful error for OOM
+            if "memory" in str(e).lower() or "outofmemory" in str(e).lower():
+                raise RuntimeError(
+                    f"TensorRT OOM error: {e}\n"
+                    "Try reducing workspace size:\n"
+                    "  workspace=1  # for 8-12GB GPUs\n"
+                    "  workspace=2  # for 16GB GPUs (current default)\n"
+                    "  workspace=4  # for 24GB+ GPUs"
+                ) from None
 
             # Helpful error for INT8
             if int8 and ("calibration" in str(e).lower() or "data" in str(e).lower()):
@@ -263,7 +299,7 @@ class ModelExporter:
             model_path: Path to source PyTorch model
             format: Export format ('onnx', 'tensorrt', 'engine', 'trt')
             output_dir: Output directory (unused, kept for API compat)
-            **kwargs: Format-specific arguments (fp16, int8, imgsz, etc.)
+            **kwargs: Format-specific arguments (fp16, int8, imgsz, batch_size, etc.)
 
         Returns:
             Path to exported model
@@ -275,8 +311,8 @@ class ModelExporter:
             >>> # Export to ONNX
             >>> path = ModelExporter.export_model("yolo11n.pt", "onnx")
 
-            >>> # Export to TensorRT with FP16
-            >>> path = ModelExporter.export_model("yolo11n.pt", "tensorrt", fp16=True)
+            >>> # Export to TensorRT with FP16 and batch=4
+            >>> path = ModelExporter.export_model("yolo11n.pt", "tensorrt", fp16=True, batch_size=4)
         """
         format_lower = format.lower()
 

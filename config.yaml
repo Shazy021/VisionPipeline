@@ -7,9 +7,9 @@ models:
   default_model: yolo
 
   yolo:
-    pytorch: weights/yolov8n.pt
-    onnx: weights/yolov8n.onnx
-    tensorrt: weights/yolov8n.engine
+    pytorch: weights/yolov8l.pt
+    onnx: weights/yolov8l.onnx
+    tensorrt: weights/yolov8l.engine
 
 # =============================================================================
 # Inference Settings
@@ -43,6 +43,13 @@ inference:
     max_size: null
 
 # =============================================================================
+# Pipeline Settings
+# =============================================================================
+pipeline:
+  # Queue size between processes (frames buffer)
+  queue_size: 300
+
+# =============================================================================
 # Triton Inference Server
 # =============================================================================
 triton:
@@ -72,7 +79,7 @@ export:
     fp16: true
     int8: false
     dynamic: true
-    workspace_gb: 4
+    workspace_gb: 3
 
 # =============================================================================
 # Automation

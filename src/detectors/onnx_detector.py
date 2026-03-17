@@ -39,12 +39,6 @@ class ONNXDetector(BaseDetector):
 
     Provides cross-platform inference with CPU and CUDA GPU support.
     Includes built-in NMS (Non-Maximum Suppression) for YOLO models.
-
-    Attributes:
-        nms_threshold: IoU threshold for NMS filtering
-        input_h: Model input height in pixels
-        input_w: Model input width in pixels
-        device: Active execution device ('GPU (CUDA)' or 'CPU')
     """
 
     def __init__(
@@ -56,7 +50,7 @@ class ONNXDetector(BaseDetector):
         model_type: str = "yolo",  # noqa: ARG002 - kept for API compatibility
         input_size: tuple[int, int] | None = None,
         class_ids: list[int] | None = None,
-    ):
+    ) -> None:
         """
         Initialize ONNX detector for YOLO models.
 
@@ -65,12 +59,9 @@ class ONNXDetector(BaseDetector):
             use_gpu: Use CUDA GPU if available (default: True)
             conf_threshold: Confidence threshold for detections (0.0-1.0)
             nms_threshold: IoU threshold for NMS (0.0-1.0, default: 0.45)
-            model_type: Deprecated - kept for API compatibility. Only YOLO is supported.
+            model_type: Deprecated - kept for API compatibility.
             input_size: Custom input size as (height, width) tuple
             class_ids: List of class IDs to detect. None = all classes
-
-        Raises:
-            ImportError: If onnxruntime is not installed
         """
         super().__init__(conf_threshold, class_ids)
 
@@ -80,20 +71,16 @@ class ONNXDetector(BaseDetector):
         self.nms_threshold = nms_threshold
         ort.preload_dlls()
 
-        # Configure execution providers (GPU first if available)
         providers = []
         if use_gpu and "CUDAExecutionProvider" in ort.get_available_providers():
             providers.append("CUDAExecutionProvider")
         providers.append("CPUExecutionProvider")
 
-        # Create inference session
         self.session = ort.InferenceSession(onnx_path, providers=providers)
 
-        # Get model I/O metadata
         self.input_name = self.session.get_inputs()[0].name
         self.input_shape_info = self.session.get_inputs()[0].shape
 
-        # Parse or use custom input size
         if input_size is not None:
             self.input_h, self.input_w = input_size
         else:
@@ -105,7 +92,6 @@ class ONNXDetector(BaseDetector):
             "GPU (CUDA)" if "CUDAExecutionProvider" in self.session.get_providers() else "CPU"
         )
 
-        # Log initialization
         logging.info(f"Loaded ONNX model: {onnx_path}")
         logging.info("   Model type: YOLO")
         logging.info(f"   Device: {self.device}")
@@ -127,9 +113,6 @@ class ONNXDetector(BaseDetector):
         """
         Preprocess frame with letterbox resize.
 
-        Performs aspect-ratio-preserving resize with padding (letterbox)
-        and normalizes pixel values to [0, 1] range.
-
         Args:
             frame: Input BGR image from OpenCV
 
@@ -138,31 +121,25 @@ class ONNXDetector(BaseDetector):
         """
         img_h, img_w = frame.shape[:2]
 
-        # Calculate scale to fit image in target size
         scale = min(self.input_w / img_w, self.input_h / img_h)
         new_w = int(img_w * scale)
         new_h = int(img_h * scale)
 
-        # Resize image
         resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
-        # Calculate padding
         pad_w = (self.input_w - new_w) // 2
         pad_h = (self.input_h - new_h) // 2
 
-        # Add padding using copyMakeBorder (faster than manual array assignment)
         padded = cv2.copyMakeBorder(
             resized,
-            pad_h,  # top
-            self.input_h - new_h - pad_h,  # bottom
-            pad_w,  # left
-            self.input_w - new_w - pad_w,  # right
+            pad_h,
+            self.input_h - new_h - pad_h,
+            pad_w,
+            self.input_w - new_w - pad_w,
             cv2.BORDER_CONSTANT,
             value=114,
         )
 
-        # Create blob: normalizes to [0,1], transposes HWC->CHW, adds batch dimension
-        # Note: swapRB=False because we want to keep BGR order (as OpenCV loads)
         blob = cv2.dnn.blobFromImage(
             padded,
             scalefactor=1.0 / 255.0,
@@ -172,7 +149,6 @@ class ONNXDetector(BaseDetector):
             crop=False,
         )
 
-        # blob shape is (1, 3, H, W) – exactly what ONNX Runtime expects
         return blob, scale, (pad_w, pad_h)
 
     def non_max_suppression(
@@ -181,12 +157,10 @@ class ONNXDetector(BaseDetector):
         """
         Perform Non-Maximum Suppression on bounding boxes.
 
-        Supports class-aware NMS (boxes of different classes don't suppress each other).
-
         Args:
             boxes: Bounding boxes in xyxy format [N, 4]
             scores: Confidence scores [N]
-            class_ids: Class IDs for each box [N] (optional, for class-aware NMS)
+            class_ids: Class IDs for each box [N]
 
         Returns:
             List of indices to keep after NMS
@@ -206,7 +180,6 @@ class ONNXDetector(BaseDetector):
             if len(order) == 1:
                 break
 
-            # Calculate IoU with remaining boxes
             xx1 = np.maximum(x1[i], x1[order[1:]])
             yy1 = np.maximum(y1[i], y1[order[1:]])
             xx2 = np.minimum(x2[i], x2[order[1:]])
@@ -218,12 +191,10 @@ class ONNXDetector(BaseDetector):
 
             iou = intersection / (areas[i] + areas[order[1:]] - intersection + 1e-6)
 
-            # Class-aware NMS: only suppress boxes of same class
             if class_ids is not None:
                 same_class = class_ids[order[1:]] == class_ids[i]
                 iou = np.where(same_class, iou, 0.0)
 
-            # Keep boxes with IoU <= threshold
             inds = np.where(iou <= self.nms_threshold)[0]
             order = order[inds + 1]
 
@@ -239,9 +210,6 @@ class ONNXDetector(BaseDetector):
         """
         Postprocess YOLO model outputs.
 
-        Handles YOLOv8 output format [1, 84, N] or [1, N, 84],
-        applies confidence filtering and NMS.
-
         Args:
             outputs: Raw ONNX outputs
             original_shape: Original image (height, width)
@@ -253,23 +221,18 @@ class ONNXDetector(BaseDetector):
         """
         output = outputs[0]
 
-        # Remove batch dimension
         if len(output.shape) == 3:
             output = output[0]
 
-        # Handle [84, N] format -> transpose to [N, 84]
         if output.shape[0] == 84:
             output = output.T
 
-        # Split output into boxes and class scores
-        boxes = output[:, :4]  # [N, 4] - cx, cy, w, h
-        class_scores = output[:, 4:]  # [N, 80] - class probabilities
+        boxes = output[:, :4]
+        class_scores = output[:, 4:]
 
-        # Get best class for each detection
         scores = np.max(class_scores, axis=1)
         class_ids = np.argmax(class_scores, axis=1)
 
-        # Filter by confidence threshold
         mask = scores >= self.conf_threshold
         filtered_boxes = boxes[mask]
         filtered_scores = scores[mask]
@@ -278,7 +241,6 @@ class ONNXDetector(BaseDetector):
         if len(filtered_boxes) == 0:
             return []
 
-        # Convert center format (xywh) to corner format (xyxy)
         cx, cy, w, h = filtered_boxes.T
         x1 = cx - w / 2
         y1 = cy - h / 2
@@ -286,7 +248,6 @@ class ONNXDetector(BaseDetector):
         y2 = cy + h / 2
         boxes_xyxy = np.stack([x1, y1, x2, y2], axis=1)
 
-        # Apply class-aware NMS
         keep_indices = self.non_max_suppression(boxes_xyxy, filtered_scores, filtered_class_ids)
 
         return self._boxes_to_detections(
@@ -310,9 +271,6 @@ class ONNXDetector(BaseDetector):
         """
         Convert boxes to final detection format.
 
-        Maps boxes from model input space back to original image
-        coordinates by removing padding and scaling.
-
         Args:
             boxes: Bounding boxes in xyxy format [N, 4]
             scores: Confidence scores [N]
@@ -331,19 +289,16 @@ class ONNXDetector(BaseDetector):
         for box, conf, cls_id in zip(boxes, scores, class_ids):
             x1, y1, x2, y2 = box
 
-            # Remove padding and scale back to original coordinates
             x1 = (x1 - pad_w) / scale
             y1 = (y1 - pad_h) / scale
             x2 = (x2 - pad_w) / scale
             y2 = (y2 - pad_h) / scale
 
-            # Clip to image boundaries
             x1 = np.clip(x1, 0, img_w)
             y1 = np.clip(y1, 0, img_h)
             x2 = np.clip(x2, 0, img_w)
             y2 = np.clip(y2, 0, img_h)
 
-            # Skip invalid boxes
             if x2 <= x1 or y2 <= y1:
                 continue
 
@@ -370,15 +325,12 @@ class ONNXDetector(BaseDetector):
 
         t0 = time.perf_counter()
 
-        # Preprocess frame
         input_tensor, scale, padding = self.preprocess(frame)
         t1 = time.perf_counter()
 
-        # Run inference
         outputs = self.session.run(self.output_names, {self.input_name: input_tensor})
         t2 = time.perf_counter()
 
-        # Postprocess YOLO output
         detections = self.postprocess_yolo(outputs, original_shape, scale, padding)
 
         t3 = time.perf_counter()
@@ -389,16 +341,11 @@ class ONNXDetector(BaseDetector):
             f"post={1000 * (t3 - t2):.1f}ms"
         )
 
-        # Apply class filtering and add class names
         return self.filter_detections(detections)
 
     def predict_batch(self, frames: list[np.ndarray]) -> list[list[Detection]]:
         """
         Run ONNX inference on a batch of frames.
-
-        More efficient than individual predict() calls because:
-        - Single session.run() call instead of N calls
-        - Better GPU utilization
 
         Args:
             frames: List of BGR images
@@ -409,35 +356,29 @@ class ONNXDetector(BaseDetector):
         if not frames:
             return []
 
-        # Single frame fallback
         if len(frames) == 1:
             return [self.predict(frames[0])]
 
-        # Preprocess all frames
         batch_tensors = []
         scales = []
         paddings = []
 
         for frame in frames:
             tensor, scale, padding = self.preprocess(frame)
-            batch_tensors.append(tensor[0])  # Remove batch dim for stacking
+            batch_tensors.append(tensor[0])
             scales.append(scale)
             paddings.append(padding)
 
-        # Stack into batch: [N, 3, H, W]
         batch = np.stack(batch_tensors, axis=0)
 
-        # Run batch inference
         outputs = self.session.run(self.output_names, {self.input_name: batch})
 
-        # Postprocess each frame
         results = []
-        output = outputs[0]  # [N, 8400, 84] or [N, 84, 8400]
+        output = outputs[0]
 
         for i, frame in enumerate(frames):
             original_shape = frame.shape[:2]
 
-            # Extract single frame output
             detections = self._postprocess_yolo_single(
                 output[i], original_shape, scales[i], paddings[i]
             )
@@ -454,7 +395,6 @@ class ONNXDetector(BaseDetector):
         padding: tuple[int, int],
     ) -> list[Detection]:
         """Postprocess single frame output from YOLO batch."""
-        # Handle [84, N] format -> transpose to [N, 84]
         if output.shape[0] == 84:
             output = output.T
 
