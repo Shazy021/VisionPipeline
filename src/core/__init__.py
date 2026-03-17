@@ -1,5 +1,9 @@
-"""Core pipeline module."""
+"""
+Core pipeline components.
+"""
 
-from src.core.orchestrator import PipelineOrchestrator
+from src.core.orchestrator import UnifiedPipeline
+from src.core.shm_ring_buffer import UnifiedRingBuffer
+from src.core.visualizer import DefaultVisualizer
 
-__all__ = ["PipelineOrchestrator"]
+__all__ = ["UnifiedRingBuffer", "UnifiedPipeline", "DefaultVisualizer"]

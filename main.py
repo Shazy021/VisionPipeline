@@ -1,5 +1,5 @@
 """
-VisionPipeline Main Entry Point.
+VisionPipeline Main Entry Point - Multiprocessing with Shared Memory.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from src.utils.container import Container
 
 
 def setup_logging(verbose: bool = False) -> None:
-    """Настроить логирование."""
+    """Setup logging."""
     logger.remove()
     log_format = (
         "<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
@@ -33,8 +33,8 @@ def main() -> None:
     container.register_cli_args(args)
 
     try:
-        orchestrator = container.get_orchestrator()
-        orchestrator.run()
+        pipeline = container.get_pipeline()
+        pipeline.run()
 
     except KeyboardInterrupt:
         logger.warning("Interrupted")
@@ -42,7 +42,7 @@ def main() -> None:
         logger.error(f"Error: {e}")
         raise
     finally:
-        logger.success("👋 Done.")
+        logger.success("Done.")
 
 
 if __name__ == "__main__":

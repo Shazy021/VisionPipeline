@@ -1,12 +1,16 @@
 """
-Pipeline Orchestrator with Threading.
+Multiprocessing Pipeline with Unified Ring Buffer (Zero-Copy).
+
+Key optimizations:
+- Single buffer (no frame copying between stages)
+- Zero-copy frame access (numpy view on SHM)
+- Lock-free 3-stage synchronization
 """
 
 from __future__ import annotations
 
-import queue
-import signal
-import threading
+import multiprocessing as mp
+import os
 import time
 from typing import Any
 
@@ -14,11 +18,12 @@ import cv2
 import numpy as np
 from loguru import logger
 
-from src.core.visualizer import DefaultVisualizer
 
+class UnifiedPipeline:
+    """Multiprocessing pipeline with unified zero-copy ring buffer."""
 
-class PipelineOrchestrator:
-    """Threading-based pipeline orchestrator."""
+    MAX_DETECTIONS = 300
+    BATCH_TIMEOUT = 0.003  # 30ms timeout for partial batch
 
     def __init__(
         self,
@@ -35,345 +40,299 @@ class PipelineOrchestrator:
         self.output_path = output_path
         self.show_preview = show_preview
         self.max_frames = max_frames
-
         self.batch_size = detector_args.get("batch_size", 1)
-        self.queue_size = config.get("pipeline.queue_size", 64)
 
-        self._stop_event = threading.Event()
+        # Get video info
+        cap = cv2.VideoCapture(source)
+        self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        # Buffer slots = 4x batch size (enough for pipeline depth)
+        self.num_slots = max(8, self.batch_size * 4)
+
+        # SHM name
+        self.shm_name = f"vp_unified_{os.getpid()}"
 
     def run(self) -> None:
-        """Run pipeline with threading."""
-        logger.info("Starting VisionPipeline (Threading Mode)...")
+        """Run pipeline."""
+        from src.core.shm_ring_buffer import UnifiedRingBuffer
 
-        def signal_handler(_sig: int, _frame: Any) -> None:
-            logger.warning("Ctrl+C pressed, stopping...")
-            self._stop_event.set()
-            _force_stop()
+        logger.info("=" * 60)
+        logger.info("VisionPipeline - Unified Zero-Copy Ring Buffer")
+        logger.info("=" * 60)
+        logger.info(
+            f"Video: {self.width}x{self.height} @ {self.fps:.1f}fps, {self.total_frames} frames"
+        )
+        logger.info(f"Batch: {self.batch_size}, Buffer: {self.num_slots} slots")
+        logger.info(f"SHM: {self.shm_name}")
+        logger.info("=" * 60)
 
-        original_handler = signal.signal(signal.SIGINT, signal_handler)
+        # CREATE SHM IN MAIN PROCESS
+        buf = UnifiedRingBuffer.create(
+            self.shm_name,
+            self.num_slots,
+            self.height,
+            self.width,
+            self.MAX_DETECTIONS,
+        )
+        logger.info("Unified SHM buffer created in main process")
+
+        # Create processes
+        processes = [
+            mp.Process(
+                target=_reader_proc,
+                args=(
+                    self.source,
+                    self.shm_name,
+                    self.num_slots,
+                    self.height,
+                    self.width,
+                    self.max_frames,
+                ),
+            ),
+            mp.Process(
+                target=_inference_proc,
+                args=(
+                    self.shm_name,
+                    self.num_slots,
+                    self.height,
+                    self.width,
+                    self.detector_args,
+                    self.MAX_DETECTIONS,
+                    self.batch_size,
+                    self.BATCH_TIMEOUT,
+                ),
+            ),
+            mp.Process(
+                target=_viewer_proc,
+                args=(
+                    self.shm_name,
+                    self.num_slots,
+                    self.height,
+                    self.width,
+                    self.fps,
+                    self.show_preview,
+                    self.output_path,
+                    self.MAX_DETECTIONS,
+                ),
+            ),
+        ]
+
+        for p in processes:
+            p.start()
 
         try:
-            video_info = self._get_video_info()
-
-            logger.info(
-                f"Video: {video_info['width']}x{video_info['height']} @ {video_info['fps']:.1f}fps"
-            )
-            logger.info(f"Total frames: {video_info['total_frames']}")
-
-            input_size = self.detector_args.get("input_size")
-            if input_size:
-                h, w = input_size
-                logger.info(f"Input size: {w}x{h} (letterbox)")
-            logger.info(f"Backend: {self.detector_args.get('backend')}")
-            logger.info(f"Model: {self.detector_args.get('model')}")
-            logger.info(f"Batch size: {self.batch_size}")
-
-            fps_source = video_info.get("fps", 30)
-
-            # Threading queues
-            frame_queue: queue.Queue = queue.Queue(maxsize=self.queue_size)
-            result_queue: queue.Queue = queue.Queue(maxsize=self.queue_size)
-
-            # Store queues globally for force stop
-            global _frame_queue_global, _result_queue_global
-            _frame_queue_global = frame_queue
-            _result_queue_global = result_queue
-
-            # Create threads
-            threads = [
-                threading.Thread(
-                    target=_reader_thread,
-                    args=(self.source, frame_queue, self.max_frames, self._stop_event),
-                    name="Reader",
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_inference_thread,
-                    args=(
-                        frame_queue,
-                        result_queue,
-                        self.detector_args,
-                        self.batch_size,
-                        self._stop_event,
-                    ),
-                    name="Inference",
-                    daemon=True,
-                ),
-                threading.Thread(
-                    target=_viewer_thread,
-                    args=(
-                        result_queue,
-                        self.show_preview,
-                        self.output_path,
-                        fps_source,
-                        self._stop_event,
-                    ),
-                    name="Viewer",
-                    daemon=True,
-                ),
-            ]
-
-            # Start threads
-            logger.info("Starting threads...")
-            for t in threads:
-                t.start()
-
-            # Wait for completion or Ctrl+C
-            while any(t.is_alive() for t in threads):
-                for t in threads:
-                    t.join(timeout=0.1)
-                if self._stop_event.is_set():
-                    break
-
+            for p in processes:
+                p.join()
         except KeyboardInterrupt:
-            logger.warning("Interrupted by user")
-        except Exception as e:
-            logger.error(f"Pipeline error: {e}")
-            raise
-        finally:
-            self._stop_event.set()
-            signal.signal(signal.SIGINT, original_handler)
-            cv2.destroyAllWindows()
-            logger.success("Pipeline stopped.")
+            for p in processes:
+                p.terminate()
 
-    def _get_video_info(self) -> dict:
-        """Get video metadata."""
-        cap = cv2.VideoCapture(self.source)
-        if not cap.isOpened():
-            raise ValueError(f"Cannot open video: {self.source}")
+        # Cleanup SHM
+        buf.close()
+        buf.unlink()
 
-        info = {
-            "fps": cap.get(cv2.CAP_PROP_FPS) or 30,
-            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
-            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)),
-            "total_frames": int(cap.get(cv2.CAP_PROP_FRAME_COUNT)),
-        }
-        cap.release()
-        return info
+        logger.success("Pipeline finished.")
 
 
-# =============================================================================
-# GLOBALS FOR FORCE STOP
-# =============================================================================
-
-_frame_queue_global: queue.Queue | None = None
-_result_queue_global: queue.Queue | None = None
-
-
-def _force_stop() -> None:
-    """Unblock all threads on Ctrl+C."""
-    global _frame_queue_global, _result_queue_global
-
-    if _frame_queue_global:
-        for _ in range(10):
-            try:
-                _frame_queue_global.put_nowait(None)
-            except queue.Full:
-                break
-
-    if _result_queue_global:
-        for _ in range(10):
-            try:
-                _result_queue_global.put_nowait(None)
-            except queue.Full:
-                break
-
-
-# =============================================================================
-# THREAD FUNCTIONS
-# =============================================================================
-
-
-def _reader_thread(
+def _reader_proc(
     source: str,
-    frame_queue: queue.Queue,
+    shm_name: str,
+    num_slots: int,
+    height: int,
+    width: int,
     max_frames: int | None,
-    stop_event: threading.Event,
 ) -> None:
-    """Reader thread - reads frames from video source."""
-    logger.info(f"[Reader] Started for {source}")
+    """Reader: video -> SHM buffer."""
+    from src.core.shm_ring_buffer import UnifiedRingBuffer
 
+    logger.info(f"[Reader] Started: {source}")
+
+    buf = UnifiedRingBuffer.connect(shm_name, num_slots, height, width)
     cap = cv2.VideoCapture(source)
+
     if not cap.isOpened():
-        logger.error(f"[Reader] Cannot open: {source}")
-        frame_queue.put(None)
+        logger.error("[Reader] Cannot open video")
+        buf.write_end()
+        buf.close()
         return
 
-    frame_count = 0
-
+    count = 0
     try:
-        while not stop_event.is_set():
+        while True:
             ret, frame = cap.read()
             if not ret:
                 break
 
-            try:
-                frame_queue.put(frame, timeout=0.1)
-            except queue.Full:
-                if stop_event.is_set():
-                    break
+            slot_idx, success = buf.write_frame(frame, timeout=0.05)
+            if not success:
                 continue
 
-            frame_count += 1
-
-            if max_frames and frame_count >= max_frames:
+            count += 1
+            if max_frames and count >= max_frames:
                 break
+            if count % 100 == 0:
+                logger.debug(f"[Reader] {count} frames")
 
-            if frame_count % 100 == 0:
-                logger.debug(f"[Reader] Read {frame_count} frames")
-
-        frame_queue.put(None)
-
-    except Exception as e:
-        logger.error(f"[Reader] Error: {e}")
+        buf.write_end()
+        logger.success(f"[Reader] Done: {count} frames")
     finally:
         cap.release()
-        logger.success(f"[Reader] Finished: {frame_count} frames")
+        buf.close()
 
 
-def _inference_thread(
-    frame_queue: queue.Queue,
-    result_queue: queue.Queue,
+def _inference_proc(
+    shm_name: str,
+    num_slots: int,
+    height: int,
+    width: int,
     detector_args: dict,
+    max_dets: int,
     batch_size: int,
-    stop_event: threading.Event,
+    batch_timeout: float,
 ) -> None:
-    """Inference thread - runs detection on batches of frames."""
+    """Inference: read frames from buffer -> model -> write detections."""
+    from src.core.shm_ring_buffer import UnifiedRingBuffer
     from src.detectors.factory import DetectorFactory
 
-    logger.info("[Inference] Initializing model...")
+    logger.info("[Inference] Connecting to SHM...")
+
+    buf = UnifiedRingBuffer.connect(shm_name, num_slots, height, width, max_dets)
+    logger.info("[Inference] SHM connected, loading model...")
 
     try:
         detector = DetectorFactory.create(**detector_args)
-        logger.success(f"[Inference] Model loaded: {detector}")
+        logger.success("[Inference] Model ready")
     except Exception as e:
-        logger.error(f"[Inference] Failed to load model: {e}")
-        result_queue.put(None)
+        logger.error(f"[Inference] Load failed: {e}")
+        buf.write_end_inference()
+        buf.close()
         return
 
-    input_size = detector_args.get("input_size")
-    if input_size:
-        h, w = input_size
-        logger.info(f"[Inference] Letterbox input: {w}x{h}")
-
-    frame_count = 0
-
+    count = 0
     try:
-        while not stop_event.is_set():
+        while True:
+            # ADAPTIVE BATCH with zero-copy
             batch_frames: list[np.ndarray] = []
+            batch_slots: list[int] = []
+            start = time.perf_counter()
 
-            for _ in range(batch_size):
-                try:
-                    frame = frame_queue.get(timeout=0.1)
-                except queue.Empty:
-                    if stop_event.is_set():
-                        result_queue.put(None)
-                        return
-                    continue
+            while len(batch_frames) < batch_size:
+                frame_view, slot_idx, is_end = buf.get_frame(timeout=0.01)
 
-                if frame is None:
+                if is_end:
+                    # Process remaining batch
                     if batch_frames:
-                        _process_batch(batch_frames, detector, result_queue)
-                    result_queue.put(None)
-                    logger.success(f"[Inference] Finished: {frame_count} frames")
+                        results = detector.predict_batch(batch_frames)
+                        for slot, dets in zip(batch_slots, results):
+                            buf.write_detections(slot, dets)
+                    buf.write_end_inference()
+                    logger.success(f"[Inference] Done: {count} frames")
                     return
-                batch_frames.append(frame)
+
+                if frame_view is not None:
+                    # COPY frame for batch (model may need contiguous array)
+                    batch_frames.append(frame_view.copy())
+                    batch_slots.append(slot_idx)
+                    start = time.perf_counter()
+                elif time.perf_counter() - start > batch_timeout and batch_frames:
+                    break
 
             if not batch_frames:
                 continue
 
-            _process_batch(batch_frames, detector, result_queue)
-            frame_count += len(batch_frames)
+            # Run inference
+            results = detector.predict_batch(batch_frames)
 
-            if frame_count % 30 == 0:
-                logger.info(f"[Inference] Processed {frame_count} frames")
+            # Write detections to each slot
+            for slot, dets in zip(batch_slots, results):
+                buf.write_detections(slot, dets)
+                count += 1
+
+            if count % 30 == 0:
+                logger.info(f"[Inference] {count} frames (batch={len(batch_frames)})")
 
     except Exception as e:
         logger.error(f"[Inference] Error: {e}")
         import traceback
 
         traceback.print_exc()
+        buf.write_end_inference()
     finally:
-        result_queue.put(None)
+        buf.close()
 
 
-def _process_batch(
-    batch_frames: list[np.ndarray],
-    detector: Any,
-    result_queue: queue.Queue,
+def _viewer_proc(
+    shm_name: str,
+    num_slots: int,
+    height: int,
+    width: int,
+    fps_src: float,
+    show: bool,
+    output: str | None,
+    max_dets: int,
 ) -> None:
-    """Process a batch of frames and send results to queue."""
-    results = detector.predict_batch(batch_frames)
-
-    for orig_frame, detections in zip(batch_frames, results):
-        result_queue.put((orig_frame, detections))
-
-
-def _viewer_thread(
-    result_queue: queue.Queue,
-    show_preview: bool,
-    output_path: str | None,
-    fps_source: float,
-    stop_event: threading.Event,
-) -> None:
-    """Viewer thread - visualizes detections and saves output."""
-    import os
+    """Viewer: read frame + detections -> display/save."""
+    from src.core.shm_ring_buffer import UnifiedRingBuffer
+    from src.core.visualizer import DefaultVisualizer
 
     logger.info("[Viewer] Started")
 
-    visualizer = DefaultVisualizer()
-    frame_count = 0
-    start_time = time.time()
+    buf = UnifiedRingBuffer.connect(shm_name, num_slots, height, width, max_dets)
+    viz = DefaultVisualizer()
+
+    count = 0
+    start = time.time()
     fps = 0.0
     writer = None
 
-    if output_path:
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    if output:
+        os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
 
     try:
-        while not stop_event.is_set():
-            try:
-                item = result_queue.get(timeout=0.1)
-            except queue.Empty:
+        while True:
+            frame_view, dets, is_end = buf.get_result(timeout=2.0)
+
+            if is_end:
+                break
+            if frame_view is None:
                 continue
 
-            if item is None:
-                break
+            if writer is None and output:
+                writer = cv2.VideoWriter(
+                    output,
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                    fps_src,
+                    (width, height),
+                )
 
-            frame, detections = item
+            count += 1
 
-            if writer is None and output_path:
-                h, w = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(output_path, fourcc, fps_source, (w, h))
-                logger.info(f"[Viewer] Writer: {w}x{h} @ {fps_source}fps")
+            if count % 30 == 0:
+                fps = count / (time.time() - start)
+                logger.info(f"[Viewer] FPS: {fps:.1f} | Dets: {len(dets)}")
 
-            frame_count += 1
-
-            if frame_count % 30 == 0:
-                elapsed = time.time() - start_time
-                fps = frame_count / elapsed
-                logger.info(f"[Viewer] FPS: {fps:.2f} | Detections: {len(detections)}")
-
-            annotated = visualizer.draw_all(frame, detections, fps, frame_count)
+            # Draw on frame (need copy for visualization)
+            annotated = viz.draw_all(frame_view, dets, fps, count)
 
             if writer:
+                # Must copy for writer
                 writer.write(annotated)
 
-            if show_preview:
-                try:
-                    cv2.imshow("VisionPipeline", annotated)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord("q") or key == 27:
-                        stop_event.set()
-                        break
-                except cv2.error:
-                    show_preview = False
+            if show:
+                cv2.imshow("VisionPipeline", annotated)
+                if cv2.waitKey(1) in (ord("q"), 27):
+                    break
 
-    except Exception as e:
-        logger.error(f"[Viewer] Error: {e}")
+            # RELEASE SLOT - critical for lock-free!
+            buf.release_slot()
+
+        logger.success(f"[Viewer] Done: {count} frames")
     finally:
         if writer:
             writer.release()
         cv2.destroyAllWindows()
-        logger.success(f"[Viewer] Finished: {frame_count} frames")
+        buf.close()
