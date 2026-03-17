@@ -205,7 +205,18 @@ class UnifiedRingBuffer:
             write_idx = self._get_write_idx()
 
             if write_idx > process_idx:
+                # MEMORY BARRIER: yield to ensure we see latest writes
+                # In multiprocessing, without this we might see updated index
+                # but stale slot status (END marker)
+                time.sleep(0)
                 break
+
+            # Check for END signal even while waiting (reader might have finished)
+            offset = self._slot_offset(process_idx)
+            if self._buf[offset] == self.END:
+                # Advance past END marker
+                self._set_process_idx(process_idx + 1)
+                return None, -1, True
 
             if time.perf_counter() > deadline:
                 return None, -1, False
@@ -216,6 +227,7 @@ class UnifiedRingBuffer:
         # Check for end signal
         valid = self._buf[offset]
         if valid == self.END:
+            self._set_process_idx(process_idx + 1)
             return None, -1, True
 
         # Wait for FRAME_READY state
@@ -296,7 +308,16 @@ class UnifiedRingBuffer:
             process_idx = self._get_process_idx()
 
             if process_idx > read_idx:
+                # MEMORY BARRIER: yield to ensure we see latest writes
+                time.sleep(0)
                 break
+
+            # Check for END signal even while waiting (inference might have finished)
+            offset = self._slot_offset(read_idx)
+            if self._buf[offset] == self.END:
+                # Advance past END marker
+                self._set_read_idx(read_idx + 1)
+                return None, [], True
 
             if time.perf_counter() > deadline:
                 return None, [], False
@@ -307,6 +328,7 @@ class UnifiedRingBuffer:
         # Check for end signal
         valid = self._buf[offset]
         if valid == self.END:
+            self._set_read_idx(read_idx + 1)
             return None, [], True
 
         # Wait for DET_READY state

@@ -9,6 +9,7 @@ Key optimizations:
 
 from __future__ import annotations
 
+import contextlib
 import multiprocessing as mp
 import os
 import time
@@ -23,7 +24,7 @@ class UnifiedPipeline:
     """Multiprocessing pipeline with unified zero-copy ring buffer."""
 
     MAX_DETECTIONS = 300
-    BATCH_TIMEOUT = 0.003  # 30ms timeout for partial batch
+    BATCH_TIMEOUT = 0.1  # 100ms timeout for partial batch
 
     def __init__(
         self,
@@ -50,8 +51,8 @@ class UnifiedPipeline:
         self.total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # Buffer slots = 4x batch size (enough for pipeline depth)
-        self.num_slots = max(8, self.batch_size * 4)
+        # Buffer slots = 2x batch size (enough for pipeline depth)
+        self.num_slots = max(8, self.batch_size * 2)
 
         # SHM name
         self.shm_name = f"vp_unified_{os.getpid()}"
@@ -167,7 +168,7 @@ def _reader_proc(
             if not ret:
                 break
 
-            slot_idx, success = buf.write_frame(frame, timeout=0.05)
+            slot_idx, success = buf.write_frame(frame, timeout=0.5)
             if not success:
                 continue
 
@@ -213,6 +214,8 @@ def _inference_proc(
         return
 
     count = 0
+    timeout_count = 0
+    MAX_TIMEOUTS = 5  # Max consecutive timeouts before checking end
     try:
         while True:
             # ADAPTIVE BATCH with zero-copy
@@ -234,12 +237,38 @@ def _inference_proc(
                     return
 
                 if frame_view is not None:
-                    # COPY frame for batch (model may need contiguous array)
-                    batch_frames.append(frame_view.copy())
+                    # NO COPY - view is already contiguous!
+                    batch_frames.append(frame_view)
                     batch_slots.append(slot_idx)
                     start = time.perf_counter()
+                    timeout_count = 0  # Reset on successful frame
                 elif time.perf_counter() - start > batch_timeout and batch_frames:
                     break
+                else:
+                    # Timeout without frame - check if stream ended
+                    timeout_count += 1
+                    if timeout_count >= MAX_TIMEOUTS:
+                        logger.warning("[Inference] Multiple timeouts, stream may have ended")
+                        # Try one more time with longer timeout to confirm
+                        frame_view, slot_idx, is_end = buf.get_frame(timeout=0.5)
+                        if is_end:
+                            if batch_frames:
+                                results = detector.predict_batch(batch_frames)
+                                for slot, dets in zip(batch_slots, results):
+                                    buf.write_detections(slot, dets)
+                            buf.write_end_inference()
+                            logger.success(f"[Inference] Done: {count} frames")
+                            return
+                        if frame_view is not None:
+                            batch_frames.append(frame_view)
+                            batch_slots.append(slot_idx)
+                            timeout_count = 0
+                            continue
+                        # Still no frame - likely stream ended
+                        logger.warning("[Inference] No more frames, exiting")
+                        buf.write_end_inference()
+                        logger.success(f"[Inference] Done: {count} frames")
+                        return
 
             if not batch_frames:
                 continue
@@ -275,7 +304,15 @@ def _viewer_proc(
     output: str | None,
     max_dets: int,
 ) -> None:
-    """Viewer: read frame + detections -> display/save."""
+    """Viewer: read frame + detections -> display/save.
+
+    Uses threading to separate SHM reading from display:
+    - Reader thread: get_result() → draw_all() → queue → release_slot()
+    - Main thread: queue.get() → cv2.imshow() / writer.write()
+    """
+    import queue
+    import threading
+
     from src.core.shm_ring_buffer import UnifiedRingBuffer
     from src.core.visualizer import DefaultVisualizer
 
@@ -283,6 +320,10 @@ def _viewer_proc(
 
     buf = UnifiedRingBuffer.connect(shm_name, num_slots, height, width, max_dets)
     viz = DefaultVisualizer()
+
+    # Frame queue (bounded to avoid memory growth)
+    frame_queue: queue.Queue[tuple[np.ndarray | None, int] | None] = queue.Queue(maxsize=4)
+    stop_event = threading.Event()
 
     count = 0
     start = time.time()
@@ -292,15 +333,59 @@ def _viewer_proc(
     if output:
         os.makedirs(os.path.dirname(output) or ".", exist_ok=True)
 
-    try:
-        while True:
-            frame_view, dets, is_end = buf.get_result(timeout=2.0)
+    def reader_thread() -> None:
+        """Read from SHM, draw, put to queue."""
+        nonlocal count, fps
+        try:
+            while not stop_event.is_set():
+                frame_view, dets, is_end = buf.get_result(timeout=0.5)
 
-            if is_end:
-                break
-            if frame_view is None:
+                if is_end:
+                    frame_queue.put(None)  # Signal end
+                    break
+                if frame_view is None:
+                    continue
+
+                count += 1
+
+                if count % 30 == 0:
+                    fps = count / (time.time() - start)
+                    logger.info(f"[Viewer] FPS: {fps:.1f} | Dets: {len(dets)}")
+
+                # Draw on frame
+                annotated = viz.draw_all(frame_view, dets, fps, count)
+
+                # Put in queue (non-blocking to avoid deadlock)
+                with contextlib.suppress(queue.Full):
+                    frame_queue.put((annotated, count), timeout=0.1)
+
+                # RELEASE SLOT - critical for lock-free!
+                buf.release_slot()
+
+        except Exception as e:
+            logger.error(f"[Viewer Reader] Error: {e}")
+            frame_queue.put(None)
+
+    # Start reader thread
+    reader = threading.Thread(target=reader_thread, name="ViewerReader", daemon=True)
+    reader.start()
+
+    try:
+        # Main thread: display loop
+        while True:
+            try:
+                item = frame_queue.get(timeout=1.0)
+            except queue.Empty:
+                if not reader.is_alive():
+                    break
                 continue
 
+            if item is None:
+                break
+
+            annotated, frame_num = item
+
+            # Init writer on first frame
             if writer is None and output:
                 writer = cv2.VideoWriter(
                     output,
@@ -309,29 +394,22 @@ def _viewer_proc(
                     (width, height),
                 )
 
-            count += 1
-
-            if count % 30 == 0:
-                fps = count / (time.time() - start)
-                logger.info(f"[Viewer] FPS: {fps:.1f} | Dets: {len(dets)}")
-
-            # Draw on frame (need copy for visualization)
-            annotated = viz.draw_all(frame_view, dets, fps, count)
-
+            # Write to file
             if writer:
-                # Must copy for writer
                 writer.write(annotated)
 
+            # Display (MUST be in main thread!)
             if show:
                 cv2.imshow("VisionPipeline", annotated)
                 if cv2.waitKey(1) in (ord("q"), 27):
+                    stop_event.set()
                     break
 
-            # RELEASE SLOT - critical for lock-free!
-            buf.release_slot()
-
         logger.success(f"[Viewer] Done: {count} frames")
+
     finally:
+        stop_event.set()
+        reader.join(timeout=1.0)
         if writer:
             writer.release()
         cv2.destroyAllWindows()
